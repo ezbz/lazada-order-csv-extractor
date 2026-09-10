@@ -1,0 +1,67 @@
+{
+  "manifest_version": 3,
+  "name": "Lazada Order CSV Extractor",
+  "version": "2.1.0",
+  "description": "Export your Lazada order history to CSV \u2014 every item, price, status and shop, with optional purchase dates.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Lazada Order CSV Extractor",
+    "default_icon": {
+      "16": "icon16.png",
+      "32": "icon32.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "permissions": [
+    "scripting",
+    "storage",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "*://*.lazada.co.th/*",
+    "*://*.lazada.sg/*",
+    "*://*.lazada.com.my/*",
+    "*://*.lazada.co.id/*",
+    "*://*.lazada.com.ph/*",
+    "*://*.lazada.vn/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.lazada.co.th/*",
+        "*://*.lazada.sg/*",
+        "*://*.lazada.com.my/*",
+        "*://*.lazada.co.id/*",
+        "*://*.lazada.com.ph/*",
+        "*://*.lazada.vn/*"
+      ],
+      "js": [
+        "interceptor.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "*://*.lazada.co.th/*",
+        "*://*.lazada.sg/*",
+        "*://*.lazada.com.my/*",
+        "*://*.lazada.co.id/*",
+        "*://*.lazada.com.ph/*",
+        "*://*.lazada.vn/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ],
+  "icons": {
+    "16": "icon16.png",
+    "32": "icon32.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

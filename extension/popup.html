@@ -1,0 +1,125 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Lazada Order CSV Extractor</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --paper: #ffffff;
+    --ink: #14252f;
+    --muted: #5d7180;
+    --rule: #dce4e8;
+    --accent: #0b7a96;
+    --accent-ink: #ffffff;
+    --soft: #eef5f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #101c24;
+      --ink: #e8eff2;
+      --muted: #8ba1ad;
+      --rule: #24363f;
+      --accent: #2ea2c0;
+      --accent-ink: #06222b;
+      --soft: #17272f;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    width: 344px; margin: 0; padding: 18px 18px 16px;
+    background: var(--paper); color: var(--ink);
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wordmark { font-size: 12px; font-weight: 500; color: var(--muted); letter-spacing: .005em; margin: 0 0 14px; }
+
+  .count { font-size: 36px; font-weight: 640; line-height: 1; letter-spacing: -.022em; font-variant-numeric: tabular-nums; }
+  .sub { font-size: 12.5px; color: var(--muted); margin-top: 5px; }
+  .phase { font-size: 12px; color: var(--muted); margin-top: 3px; min-height: 1.4em; font-variant-numeric: tabular-nums; }
+
+  .track { height: 3px; border-radius: 2px; background: var(--rule); overflow: hidden; margin: 13px 0 16px; }
+  .track > i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 2px; transition: width .3s ease; }
+  @media (prefers-reduced-motion: reduce) { .track > i { transition: none; } }
+
+  button {
+    font: inherit; color: var(--ink); cursor: pointer;
+    background: transparent; border: 1px solid var(--rule);
+    border-radius: 8px; padding: 7px 10px;
+  }
+  button:hover:not(:disabled) { border-color: var(--muted); }
+  button:disabled { opacity: .42; cursor: default; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .primary {
+    width: 100%; padding: 11px; font-size: 13.5px; font-weight: 600;
+    background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
+  }
+  .primary:hover:not(:disabled) { filter: brightness(1.08); }
+  .secondary { width: 100%; padding: 9px; font-weight: 550; background: var(--soft); border-color: transparent; }
+
+  .note { font-size: 11.5px; line-height: 1.45; color: var(--muted); margin: 7px 2px 0; }
+  .note strong { font-weight: 600; color: var(--ink); }
+
+  .split { display: flex; align-items: center; gap: 9px; margin: 17px 0 13px; }
+  .split::before, .split::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+  .split span { font-size: 11.5px; color: var(--muted); }
+
+  .row { display: flex; gap: 6px; margin-top: 12px; }
+  .row > button { flex: 1; font-size: 11.5px; padding: 6px 4px; }
+
+  details { margin-top: 13px; }
+  summary { font-size: 11.5px; color: var(--muted); cursor: pointer; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "▸ "; }
+  details[open] summary::before { content: "▾ "; }
+  .adv { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); margin-top: 9px; }
+  .adv input { width: 58px; padding: 4px 6px; font: inherit; color: var(--ink); background: var(--paper);
+               border: 1px solid var(--rule); border-radius: 6px; font-variant-numeric: tabular-nums; }
+  .adv input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  #log {
+    margin-top: 10px; padding: 9px 10px; max-height: 148px; overflow: auto;
+    background: var(--soft); border-radius: 7px; color: var(--muted);
+    font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap;
+  }
+</style>
+
+<p class="wordmark">Lazada Order CSV Extractor</p>
+
+<div class="count" id="count">—</div>
+<div class="sub" id="sub">Checking this page</div>
+<div class="phase" id="phase" aria-live="polite"></div>
+<div class="track"><i id="fill"></i></div>
+
+<button id="run" class="primary">Export all orders to CSV</button>
+<p class="note">Everything you have bought: item, variation, quantity, price, status and shop.
+Takes about <strong>2 minutes</strong>. Order dates are not included — Lazada's order list simply
+does not return them.</p>
+
+<div class="split"><span>Optional</span></div>
+
+<button id="dates" class="secondary" disabled>Add purchase dates</button>
+<p class="note" id="datesNote">Adds the date each order was placed. This reads one order at a time,
+so it takes far longer than the export. Skip it unless you need spending over time.</p>
+
+<div class="row">
+  <button id="csv" disabled>Save CSV again</button>
+  <button id="json" disabled>Save raw JSON</button>
+  <button id="stop" disabled>Stop</button>
+</div>
+
+<details>
+  <summary>Details</summary>
+  <div class="adv">
+    <label for="start">Pages</label>
+    <input id="start" type="number" min="1" value="1">
+    <span>to</span>
+    <input id="end" type="number" min="0" value="0" title="0 means every page the server reports">
+    <label for="delay">Pause (ms)</label>
+    <input id="delay" type="number" min="0" step="100" value="600">
+  </div>
+  <div id="log"></div>
+</details>
+
+<script src="popup.js"></script>

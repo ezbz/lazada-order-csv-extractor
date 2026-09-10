@@ -1,0 +1,783 @@
+// ISOLATED world. Orchestrates the export.
+// Same-origin fetches from here carry your Lazada session cookies automatically.
+(() => {
+  if (window.__LZX_CONTENT__) return;
+  window.__LZX_CONTENT__ = true;
+
+  const CAP_KEY = 'lzx_captures';
+  const RESULT_KEY = 'lzx_result';
+
+  const state = {
+    captures: [],
+    rows: [],
+    raw: [],
+    running: false,
+    cancel: false,
+    done: false,
+    phase: null,
+    mode: null,
+    log: [],
+    progress: { done: 0, total: 0, message: 'Ready' },
+  };
+
+  const log = (m) => {
+    state.log.push(`${new Date().toLocaleTimeString()}  ${m}`);
+    if (state.log.length > 120) state.log.shift();
+    state.progress.message = m;
+  };
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
+  const isScalar = (v) => v === null || ['string', 'number', 'boolean'].includes(typeof v);
+  const getText = (el) => ((el && (el.innerText || el.textContent)) || '').trim();
+  const safeParse = (t) => { try { return JSON.parse(t); } catch (_) { return null; } };
+
+  const PAGE_KEYS = /^(page|pagenum|pageno|pageindex|pagenumber|currentpage|curpage|pn)$/i;
+  const MONEY = /(?:฿|THB|RM|Rp|S\$|₱|₫|\$)\s?\d[\d.,]*/g;
+  const PRICEY = /(?:฿|THB|RM|Rp|S\$|₱|₫)\s?\d/;
+
+  // ------------------------------------------------------------- persistence
+  const store = {
+    set(k, v) { try { chrome.storage.local.set({ [k]: v }); } catch (_) {} },
+    get(k) { return new Promise((res) => { try { chrome.storage.local.get(k, (o) => res(o && o[k])); } catch (_) { res(null); } }); },
+  };
+
+  const drain = () => { try { window.postMessage({ __lzx: 'drain' }, '*'); } catch (_) {} };
+
+  window.addEventListener('message', (e) => {
+    if (e.source !== window) return;
+    const d = e.data;
+    if (!d || d.__lzx !== 'capture' || !d.rec) return;
+    // Only accept same-origin records: anything on the page can post here.
+    let origin = '';
+    try { origin = new URL(d.rec.url).origin; } catch (_) { return; }
+    if (origin !== location.origin) return;
+
+    // The drain replays the whole buffer, so ignore anything already held.
+    const key = capKey(d.rec);
+    if (state.captures.some((c) => capKey(c) === key)) return;
+
+    state.captures.push(d.rec);
+    keepNewestPerPath();
+    invalidate();
+    scheduleSave();
+  });
+
+  const capKey = (c) => `${c.url}|${c.ts}`;
+
+  // Bodies run ~75KB each; batch writes rather than one per record.
+  let saveTimer = null;
+  function scheduleSave() {
+    if (saveTimer) return;
+    saveTimer = setTimeout(() => { saveTimer = null; store.set(CAP_KEY, state.captures); }, 1000);
+  }
+
+  // Derived status costs ~25 JSON parses plus deep walks; the popup polls twice a
+  // second, so compute once and recompute only when captures or rows change.
+  let cache = null;
+  const invalidate = () => { cache = null; };
+  function derived() {
+    if (!cache) {
+      cache = {
+        api: !!pickCapture(),
+        detail: !!detailReady(),
+        diag: state.rows.length ? detailDiag() : [],
+        totalPages: detectTotalPages(),
+      };
+    }
+    return cache;
+  }
+
+  function pathOf(url) {
+    try { return new URL(url).pathname; } catch (_) { return String(url); }
+  }
+
+  // Retain the newest capture per endpoint path. The list page re-fires
+  // order-list constantly and would otherwise evict the one order-detail
+  // capture the date pass depends on.
+  function keepNewestPerPath() {
+    const byPath = new Map();
+    for (const c of state.captures) byPath.set(pathOf(c.url), c);
+    state.captures = [...byPath.values()].slice(-10);
+  }
+
+  // ------------------------------------------------------------ deep JSON keys
+  // Lazada nests the page number at lifecycle.pageNum, so a top-level scan misses it.
+  function deepFindKey(node, re, depth = 0) {
+    if (!isObj(node) || depth > 6) return null;
+    for (const [k, v] of Object.entries(node)) {
+      if (re.test(k) && (typeof v === 'number' || (typeof v === 'string' && /^\d+$/.test(v)))) {
+        return [{ k, leaf: true, str: typeof v === 'string' }];
+      }
+    }
+    for (const [k, v] of Object.entries(node)) {
+      if (isObj(v)) { const sub = deepFindKey(v, re, depth + 1); if (sub) return [{ k, json: false }, ...sub]; }
+      else if (typeof v === 'string' && /^\s*[{[]/.test(v)) {
+        const p = safeParse(v);
+        if (isObj(p)) { const sub = deepFindKey(p, re, depth + 1); if (sub) return [{ k, json: true }, ...sub]; }
+      }
+    }
+    return null;
+  }
+
+  function deepSet(node, path, value) {
+    const [head, ...rest] = path;
+    const out = { ...node };
+    if (head.leaf) { out[head.k] = head.str ? String(value) : value; return out; }
+    const child = head.json ? safeParse(node[head.k]) : node[head.k];
+    const next = deepSet(child, rest, value);
+    out[head.k] = head.json ? JSON.stringify(next) : next;
+    return out;
+  }
+
+  function scalars(obj, prefix) {
+    const out = {};
+    if (!isObj(obj)) return out;
+    for (const [k, v] of Object.entries(obj)) {
+      if (isScalar(v)) out[prefix + k] = v;
+      else if (isObj(v)) for (const [k2, v2] of Object.entries(v)) if (isScalar(v2)) out[`${prefix}${k}.${k2}`] = v2;
+    }
+    return out;
+  }
+
+  // --------------------------------------------------------- Ultron response
+  // module.data is a flat entity map (orderItem_*, order_*, orderShop_*), not an array.
+  function parseUltron(json, page) {
+    const mod = json && json.module;
+    const data = mod && mod.data;
+    if (!isObj(data)) return null;
+
+    const ents = [];
+    for (const [key, v] of Object.entries(data)) {
+      if (isObj(v) && isObj(v.fields)) ents.push({ key, id: v.id, fields: v.fields });
+    }
+    const items = ents.filter((e) => /^orderItem/i.test(e.key));
+    if (!items.length) return null;
+
+    // Shops join by tradeOrderLineIds. tradeOrderId is NOT reliable here: item and
+    // shop entities carry different ids in this payload.
+    const byLineId = new Map();
+    const byOrderId = new Map();
+    for (const s of ents.filter((e) => /^orderShop/i.test(e.key))) {
+      const ids = s.fields.tradeOrderLineIds;
+      const list = Array.isArray(ids) ? ids : (typeof ids === 'string' ? ids.split(/[,;\s]+/) : []);
+      for (const id of list) if (id) byLineId.set(String(id).trim(), s.fields);
+      const oid = s.fields.tradeOrderId;
+      if (oid && !byOrderId.has(String(oid))) byOrderId.set(String(oid), s.fields);
+    }
+
+    const rows = items.map((e) => {
+      const f = e.fields;
+      const d = isObj(f.delivery) ? f.delivery : {};
+      const sku = isObj(f.sku) ? f.sku : {};
+      const lineId = String(e.id || e.key.replace(/^orderItem_/i, ''));
+      let shop = byLineId.get(lineId);
+      let match = 'lineId';
+      if (!shop) { shop = byOrderId.get(String(f.tradeOrderId)); match = shop ? 'orderId' : 'none'; }
+      if (!shop) shop = {};
+      const oi = isObj(shop.orderInfo) ? shop.orderInfo : {};
+      return {
+        _page: page,
+        _shopMatch: match,
+        orderId: f.tradeOrderId ?? '',
+        lineId,
+        purchasedAt: '',   // list endpoint never populates dates; filled by the detail pass
+        paidAt: '',
+        status: shop.status || oi.status || d.status || '',
+        itemStatus: f.status || '',   // e.g. "Refund issued" on individual lines
+        title: f.title ?? '',
+        variation: sku.skuText ?? sku.productVariant ?? '',
+        quantity: f.quantity ?? '',
+        price: f.price ?? '',
+        orderTotal: d.orderDetailPrice || '',
+        paymentMethod: oi.paymentDes || '',
+        deliveryMethod: d.method ?? '',
+        deliveryPrice: d.price ?? '',
+        deliverySummary: d.deliverySummary ?? '',
+        brand: sku.brand ?? '',
+        shopName: shop.name ?? '',
+        shopId: shop.shopId ?? '',
+        sellerId: f.sellerId ?? shop.sellerId ?? '',
+        itemId: f.itemId ?? '',
+        skuId: f.skuId ?? '',
+        orderDetailUrl: f.orderDetailUrl ?? (isObj(shop.order) ? shop.order.orderDetailUrl : '') ?? '',
+        itemUrl: f.itemUrl ?? '',
+        picUrl: f.picUrl ?? '',
+        ...scalars(f, 'raw.'),
+        ...scalars(shop, 'shop.'),
+      };
+    });
+
+    const lc = isObj(mod.lifecycle) ? mod.lifecycle : {};
+    return {
+      rows,
+      raw: items.map((i) => i.fields),
+      totalPages: Number(lc.totalPageNum) || 0,
+      pageSize: Number(lc.pageSize) || 0,
+    };
+  }
+
+  // ------------------------------------------------------------- request replay
+  function buildPager(rec) {
+    let url;
+    try { url = new URL(rec.url); } catch (_) { return null; }
+
+    for (const [k, v] of url.searchParams.entries()) {
+      if (PAGE_KEYS.test(k) && Number.isFinite(Number(v))) {
+        return { where: `url:${k}`, make: (page) => {
+          const u = new URL(rec.url); u.searchParams.set(k, String(page));
+          return { url: u.toString(), method: rec.method, headers: rec.reqHeaders, body: rec.reqBody };
+        } };
+      }
+      const nested = safeParse(v);
+      if (isObj(nested)) {
+        const path = deepFindKey(nested, PAGE_KEYS);
+        if (path) {
+          return { where: `url-json:${k}.${path.map((x) => x.k).join('.')}`, make: (page) => {
+            const u = new URL(rec.url); u.searchParams.set(k, JSON.stringify(deepSet(nested, path, page)));
+            return { url: u.toString(), method: rec.method, headers: rec.reqHeaders, body: rec.reqBody };
+          } };
+        }
+      }
+    }
+
+    const bodyJson = rec.reqBody ? safeParse(rec.reqBody) : null;
+    if (isObj(bodyJson)) {
+      const path = deepFindKey(bodyJson, PAGE_KEYS);
+      if (path) {
+        return { where: `body:${path.map((x) => x.k).join('.')}`, make: (page) => ({
+          url: rec.url, method: rec.method, headers: rec.reqHeaders,
+          body: JSON.stringify(deepSet(bodyJson, path, page)),
+        }) };
+      }
+    }
+    return null;
+  }
+
+  function pickCapture() {
+    for (let i = state.captures.length - 1; i >= 0; i--) {
+      const rec = state.captures[i];
+      const resp = safeParse(rec.body);
+      if (!resp || !parseUltron(resp, 1)) continue;
+      const pager = buildPager(rec);
+      if (pager) return { rec, pager };
+    }
+    return null;
+  }
+
+  // -------------------------------------------------------------- pager clicks
+  function pagerButtons() {
+    return Array.from(document.querySelectorAll(
+      '.next-pagination-item, [class*="pagination-item"], [class*="pagination"] button, [class*="pagination"] a'
+    )).filter((b) => /^\d+$/.test(getText(b)) && !b.disabled && b.offsetParent !== null);
+  }
+
+  // Trigger one real request so there is something to replay.
+  function triggerRequest() {
+    const btns = pagerButtons();
+    if (btns.length > 1) {
+      const current = btns.find((b) => /current|active/i.test(String(b.className)));
+      const target = btns.find((b) => b !== current) || btns[1];
+      target.click();
+      return true;
+    }
+    return false;
+  }
+
+  async function ensureCapture() {
+    let cap = pickCapture();
+    if (cap) return cap;
+    log('Recording one real request from the page…');
+    if (!triggerRequest()) { log('No pager found to trigger a request.'); return null; }
+    for (let i = 0; i < 50; i++) {
+      await sleep(400);
+      cap = pickCapture();
+      if (cap) return cap;
+    }
+    return null;
+  }
+
+  // -------------------------------------------------------- live DOM fallback
+  function discoverCards(root) {
+    const counts = new Map();
+    for (const el of root.querySelectorAll('div,li,section,article')) {
+      const cn = typeof el.className === 'string' ? el.className.trim() : '';
+      if (!cn) continue;
+      const t = getText(el);
+      if (t.length < 30 || t.length > 5000 || !PRICEY.test(t)) continue;
+      for (const c of cn.split(/\s+/)) counts.set(c, (counts.get(c) || 0) + 1);
+    }
+    let best = [];
+    for (const [cls, n] of counts) {
+      if (n < 2 || n > 200) continue;
+      let els;
+      try { els = Array.from(root.querySelectorAll(`.${CSS.escape(cls)}`)); } catch (_) { continue; }
+      els = els.filter((e) => PRICEY.test(getText(e)));
+      els = els.filter((e) => !els.some((o) => o !== e && o.contains(e)));
+      if (els.length > best.length) best = els;
+    }
+    return best;
+  }
+
+  function extractLive(page) {
+    let cards = Array.from(document.querySelectorAll('[class*="order-item"],[class*="orderItem"],[class*="order-card"]'));
+    cards = cards.filter((c) => !cards.some((o) => o !== c && o.contains(c)));
+    if (!cards.length) cards = discoverCards(document);
+
+    const rows = [];
+    for (const card of cards) {
+      const text = getText(card);
+      const link = card.querySelector('a[href*="tradeOrderId"],a[href*="order/detail"]');
+      let orderId = '';
+      if (link) { const m = (link.getAttribute('href') || '').match(/tradeOrderId=([^&#]+)/i); if (m) orderId = decodeURIComponent(m[1]); }
+      if (!orderId) { const m = text.match(/\b\d{10,}\b/); if (m) orderId = m[0]; }
+      const money = text.match(MONEY) || [];
+      const titles = Array.from(card.querySelectorAll('img[alt]')).map((i) => i.alt).filter((a) => a && a.length > 3);
+      const qm = text.match(/[x×]\s?(\d+)/);
+      if (!titles.length) { rows.push({ _page: page, _source: 'dom', orderId, orderTotal: money[money.length - 1] || '', rawText: text.slice(0, 900) }); continue; }
+      titles.forEach((t, i) => rows.push({
+        _page: page, _source: 'dom', orderId,
+        title: t, price: money[i] || '', quantity: qm ? qm[1] : '',
+        orderTotal: money[money.length - 1] || '',
+        orderDetailUrl: link ? new URL(link.getAttribute('href'), location.href).toString() : '',
+        rawText: i === 0 ? text.slice(0, 900) : '',
+      }));
+    }
+    return rows;
+  }
+
+  function detectTotalPages() {
+    // Scoped to the pager. Scanning the whole body would read a delivery date
+    // like "9/2026" as 2026 pages.
+    const scopes = document.querySelectorAll('[class*="pagination"],[class*="pager"],[class*="next-pagination"]');
+    let max = 0;
+    for (const scope of scopes) {
+      for (const frac of (getText(scope).match(/(\d+)\s*\/\s*(\d+)/g) || [])) {
+        const v = parseInt(frac.split('/')[1].trim(), 10);
+        if (Number.isFinite(v) && v > max && v <= 5000) max = v;
+      }
+      for (const b of scope.querySelectorAll('button,a,li,span')) {
+        const v = parseInt(getText(b), 10);
+        if (Number.isFinite(v) && v > max && v <= 5000) max = v;
+      }
+    }
+    return max || 1;
+  }
+
+  // ------------------------------------------------------------- detail pass
+  // The list endpoint carries no dates. The detail page is client-rendered too, so
+  // fetching its HTML yields a shell — the same record-and-replay trick is used:
+  // capture one real order-detail request, then swap the order id per order.
+
+  const DATE_KEY = /(gmtcreate|createtime|createdat|placedat|ordertime|paytime|paidat|paymenttime|ordercreatetime|orderdate|purchasedat)/i;
+  const PAY_KEY = /(paymentmethod|paymentdes|paymethod|paymentname|paymenttype)/i;
+  const TOTAL_KEY = /(totalamount|grandtotal|ordertotal|totalprice|orderamount|totalfee)/i;
+  const DATEISH = /(20\d\d)|(\d{1,2}[\/\-\s][A-Za-z]{3})|^\d{13}$/;
+
+  // Collect scalar values under date/payment/total-ish keys, wherever they sit.
+  function harvest(root) {
+    const out = { dates: {}, pay: {}, total: {} };
+    const seen = new Set();
+    (function walk(n, depth) {
+      if (!n || typeof n !== 'object' || depth > 8 || seen.has(n)) return;
+      seen.add(n);
+      if (Array.isArray(n)) { n.forEach((v) => walk(v, depth + 1)); return; }
+      for (const [k, v] of Object.entries(n)) {
+        if (isScalar(v) && v !== null && String(v).trim()) {
+          const sv = String(v).trim();
+          if (DATE_KEY.test(k) && DATEISH.test(sv) && !out.dates[k]) out.dates[k] = sv;
+          else if (PAY_KEY.test(k) && sv.length < 60 && !out.pay[k]) out.pay[k] = sv;
+          else if (TOTAL_KEY.test(k) && sv.length < 30 && !out.total[k]) out.total[k] = sv;
+        } else walk(v, depth + 1);
+      }
+    })(root, 0);
+    return out;
+  }
+
+  // Locate a leaf whose value is one of our known order ids, so it can be swapped.
+  function findIdPath(node, idSet, depth = 0, path = []) {
+    if (!isObj(node) || depth > 6) return null;
+    for (const [k, v] of Object.entries(node)) {
+      if ((typeof v === 'string' || typeof v === 'number') && idSet.has(String(v))) {
+        return { path: [...path, { k, leaf: true, str: typeof v === 'string' }], id: String(v) };
+      }
+    }
+    for (const [k, v] of Object.entries(node)) {
+      if (isObj(v)) {
+        const s = findIdPath(v, idSet, depth + 1, [...path, { k, json: false }]);
+        if (s) return s;
+      } else if (typeof v === 'string' && /^\s*[{[]/.test(v)) {
+        const p = safeParse(v);
+        if (isObj(p)) {
+          const s = findIdPath(p, idSet, depth + 1, [...path, { k, json: true }]);
+          if (s) return s;
+        }
+      }
+    }
+    return null;
+  }
+
+  // A capture is usable for the detail pass if its request embeds a known order id
+  // and its response carries at least one date.
+  function pickDetailCapture(idSet) {
+    for (let i = state.captures.length - 1; i >= 0; i--) {
+      const rec = state.captures[i];
+      if (!rec.reqBody) continue;
+      const resp = safeParse(rec.body);
+      if (!resp) continue;
+      const h = harvest(resp);
+      if (!Object.keys(h.dates).length) continue;
+      const body = safeParse(rec.reqBody);
+      if (!isObj(body)) continue;
+      const hit = findIdPath(body, idSet);
+      if (!hit) continue;
+      return { rec, body, path: hit.path, sampleId: hit.id, dateKeys: Object.keys(h.dates) };
+    }
+    return null;
+  }
+
+  // Why is the dates button still disabled? Report per capture rather than
+  // leaving a greyed-out button with no explanation.
+  function detailDiag() {
+    const ids = new Set(state.rows.map((r) => String(r.orderId)).filter(Boolean));
+    if (!state.captures.length) return ['No requests recorded yet on this page.'];
+    const paths = state.captures.map((c) => pathOf(c.url));
+    if (!paths.some((p) => /detail/i.test(p))) {
+      return ['No order-detail request recorded yet — open one order, let it load, then reopen this popup.',
+              `Seen so far: ${paths.join(', ')}`];
+    }
+    const out = [];
+    for (const rec of state.captures.slice(-6)) {
+      let path = rec.url;
+      try { path = new URL(rec.url).pathname; } catch (_) {}
+      const resp = safeParse(rec.body);
+      const h = resp ? harvest(resp) : null;
+      const dateKeys = h ? Object.keys(h.dates) : [];
+      const body = rec.reqBody ? safeParse(rec.reqBody) : null;
+      const hit = isObj(body) && ids.size ? findIdPath(body, ids) : null;
+      const why = [];
+      if (!rec.reqBody) why.push('no request body');
+      else if (!isObj(body)) why.push('body not JSON');
+      else if (!hit) why.push('no known order id in body');
+      if (!resp) why.push('response not JSON');
+      else if (!dateKeys.length) why.push('no date-like keys in response');
+      out.push(`${path} — ${why.length ? why.join('; ') : `OK (id at ${hit.path.map((x) => x.k).join('.')}, dates: ${dateKeys.join(', ')})`}`);
+    }
+    return out;
+  }
+
+  function detailReady() {
+    const ids = new Set(state.rows.map((r) => String(r.orderId)).filter(Boolean));
+    return ids.size ? pickDetailCapture(ids) : null;
+  }
+
+  // Replace every standalone occurrence of the id, not just the first.
+  function swapId(bodyStr, fromId, toId) {
+    return String(bodyStr).replace(new RegExp(`(?<![0-9])${fromId}(?![0-9])`, 'g'), toId);
+  }
+
+  async function runDetails(delayMs) {
+    const byOrder = new Map();
+    for (const r of state.rows) if (r.orderId && !byOrder.has(String(r.orderId))) byOrder.set(String(r.orderId), r);
+    const ids = [...byOrder.keys()];
+    if (!ids.length) { log('No orders to enrich.'); return; }
+
+    const cap = pickDetailCapture(new Set(ids));
+    if (!cap) {
+      log('No order-detail request recorded yet. Open any one order, then click "Fetch purchase dates".');
+      return;
+    }
+    const occurrences = (String(cap.rec.reqBody).match(new RegExp(`(?<![0-9])${cap.sampleId}(?![0-9])`, 'g')) || []).length;
+    log(`Detail API: ${new URL(cap.rec.url).pathname} — order id in ${occurrences} place(s), dates in ${cap.dateKeys.join(', ')}`);
+
+    const headers = { ...(cap.rec.reqHeaders || {}) };
+    ['host', 'cookie', 'content-length', 'connection', 'origin', 'referer', 'user-agent']
+      .forEach((h) => Object.keys(headers).forEach((k) => { if (k.toLowerCase() === h) delete headers[k]; }));
+    if (!Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')) headers['content-type'] = 'application/json';
+
+    const enrich = new Map();
+    state.phase = 'details';
+    state.progress.total = ids.length;
+    state.progress.done = 0;
+    let misses = 0;
+
+    for (let i = 0; i < ids.length && !state.cancel; i++) {
+      const id = ids[i];
+      try {
+        const res = await fetch(cap.rec.url, {
+          method: cap.rec.method || 'POST',
+          credentials: 'include',
+          headers,
+          body: swapId(cap.rec.reqBody, cap.sampleId, id),
+        });
+        const text = await res.text();
+        if (!text.includes(id)) {
+          // The response is not about this order — a stale id was left in the
+          // request. Dating rows from it would be silently wrong.
+          misses++;
+          if (misses === 1) log(`Response did not match order ${id}; not dating it.`);
+        } else {
+          const json = safeParse(text);
+          const h = json ? harvest(json) : null;
+          if (h && Object.keys(h.dates).length) { enrich.set(id, h); misses = 0; }
+          else misses++;
+        }
+      } catch (e) {
+        misses++;
+        if (i < 3) log(`Detail fetch failed: ${e.message}`);
+      }
+
+      // Stop early rather than grinding through a thousand failing requests.
+      if (misses >= 8 && enrich.size === 0) { log('Detail replay is not returning matching dates — stopping the pass.'); break; }
+
+      state.progress.done = i + 1;
+      if (i % 25 === 0) log(`Details ${i + 1}/${ids.length} — ${enrich.size} dated`);
+      await sleep(delayMs);
+    }
+
+    const PAYISH = /(pay|paid)/i;
+    const pick = (obj, prefer, fallback) => {
+      for (const k of prefer) for (const [key, v] of Object.entries(obj)) if (key.toLowerCase() === k) return v;
+      if (fallback === 'non-payment') {
+        for (const [key, v] of Object.entries(obj)) if (!PAYISH.test(key)) return v;
+      } else if (fallback === 'any') {
+        return Object.values(obj)[0] || '';
+      }
+      return '';
+    };
+
+    let filled = 0;
+    for (const r of state.rows) {
+      const h = enrich.get(String(r.orderId));
+      if (!h) continue;
+      const purchased = pick(h.dates, ['gmtcreate', 'createtime', 'createdat', 'placedat', 'ordertime', 'ordercreatetime'], 'non-payment');
+      const paid = pick(h.dates, ['paytime', 'paidat', 'paymenttime']);  // no fallback: never echo the purchase date
+      if (purchased) { r.purchasedAt = purchased; filled++; }
+      if (paid) r.paidAt = paid;
+      if (!r.orderTotal) r.orderTotal = pick(h.total, ['totalamount', 'grandtotal', 'ordertotal'], 'any');
+      if (!r.paymentMethod) r.paymentMethod = pick(h.pay, ['paymentmethod', 'paymentdes', 'paymethod'], 'any');
+    }
+    log(`Detail pass done — dated ${filled} of ${state.rows.length} rows across ${enrich.size} orders.`);
+  }
+
+  // --------------------------------------------------------------------- run
+  function addRows(rows, raw) {
+    const seen = new Set(state.rows.map((r) => `${r.orderId}|${r.lineId}|${r.skuId}|${r.title}`));
+    let added = 0;
+    for (const r of rows) {
+      const k = `${r.orderId}|${r.lineId}|${r.skuId}|${r.title}`;
+      if (seen.has(k)) continue;
+      seen.add(k); state.rows.push(r); added++;
+    }
+    if (raw) state.raw.push(...raw);
+    if (added) invalidate();
+    return added;
+  }
+
+  async function fetchPage(cap, page) {
+    const req = cap.pager.make(page);
+    const headers = { ...(req.headers || {}) };
+    ['host', 'cookie', 'content-length', 'connection', 'origin', 'referer', 'user-agent']
+      .forEach((h) => Object.keys(headers).forEach((k) => { if (k.toLowerCase() === h) delete headers[k]; }));
+    if (req.body && !Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')) {
+      headers['content-type'] = 'application/json';
+    }
+    const init = { method: req.method || 'GET', credentials: 'include', headers };
+    if (req.body && init.method !== 'GET' && init.method !== 'HEAD') init.body = req.body;
+
+    const res = await fetch(req.url, init);
+    const json = safeParse(await res.text());
+    if (!json) throw new Error(`page ${page}: HTTP ${res.status}, response was not JSON`);
+    if (json.success === false) throw new Error(`page ${page}: server said success=false (${json.errorCode || 'no code'})`);
+    const parsed = parseUltron(json, page);
+    if (!parsed) throw new Error(`page ${page}: no order items in response`);
+    return parsed;
+  }
+
+  async function run(opts) {
+    state.running = true;
+    state.cancel = false;
+    state.done = false;
+    state.rows = [];
+    state.raw = [];
+    state.log = [];
+    state.phase = 'list';
+    state.progress = { done: 0, total: 0, message: 'Starting' };
+
+    try {
+      const cap = await ensureCapture();
+
+      if (!cap) {
+        state.mode = 'live DOM';
+        log('No API request could be recorded — reading the visible page instead.');
+        addRows(extractLive(1), null);
+        finish(`Read ${state.rows.length} rows from the current page only.`);
+        return;
+      }
+
+      state.mode = `API (${cap.pager.where})`;
+      log(`Using ${new URL(cap.rec.url).pathname} — page field ${cap.pager.where}`);
+
+      const start = opts.startPage || 1;
+      const first = await fetchPage(cap, start);
+      let total = opts.endPage || first.totalPages || detectTotalPages();
+      if (total < start) {
+        log(`Last page (${total}) is before the first (${start}); exporting page ${start} only.`);
+        total = start;
+      }
+      state.progress.total = total - start + 1;
+
+      addRows(first.rows, first.raw);
+      state.progress.done = 1;
+      log(`Page ${start}/${total} — ${first.rows.length} items`);
+
+      for (let page = start + 1; page <= total && !state.cancel; page++) {
+        await sleep(opts.delayMs + Math.random() * 200);
+        let out;
+        try { out = await fetchPage(cap, page); }
+        catch (e) { log(`${e.message} — stopping here.`); break; }
+        const added = addRows(out.rows, out.raw);
+        state.progress.done = page - start + 1;
+        log(`Page ${page}/${total} — ${out.rows.length} items (${added} new), ${state.rows.length} rows`);
+      }
+
+      if (opts.fetchDetails && state.rows.length && !state.cancel) {
+        await runDetails(opts.delayMs || 400);
+      }
+
+      if (state.rows.length) downloadCsv();
+      finish(state.cancel
+        ? `Stopped. ${state.rows.length} rows kept — CSV downloaded.`
+        : `Done. ${state.rows.length} rows from ${new Set(state.rows.map((r) => r.orderId)).size} orders — CSV downloaded.`);
+    } catch (e) {
+      finish(`Failed: ${e.message}`);
+    }
+  }
+
+  function finish(msg) {
+    state.running = false;
+    state.done = true;
+    log(msg);
+    saveRows();
+  }
+
+  function saveRows() {
+    store.set(RESULT_KEY, { rows: state.rows.slice(0, 20000), at: Date.now(), url: location.pathname });
+  }
+
+  // ------------------------------------------------------------------ output
+  function toCsv(rows) {
+    if (!rows.length) return '';
+    const cols = []; const seen = new Set();
+    for (const r of rows) for (const k of Object.keys(r)) if (!seen.has(k)) { seen.add(k); cols.push(k); }
+    const esc = (v) => {
+      if (v === null || v === undefined) return '';
+      const s = String(v);
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    return '﻿' + [cols.join(','), ...rows.map((r) => cols.map((c) => esc(r[c])).join(','))].join('\n');
+  }
+
+  function download(name, text, mime) {
+    const url = URL.createObjectURL(new Blob([text], { type: `${mime};charset=utf-8` }));
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  }
+
+  const stamp = () => new Date().toISOString().slice(0, 10);
+  const downloadCsv = () => download(`lazada-orders-${stamp()}.csv`, toCsv(state.rows), 'text/csv');
+  const downloadJson = () => download(`lazada-orders-${stamp()}.json`, JSON.stringify(state.raw.length ? state.raw : state.rows, null, 2), 'application/json');
+
+  // --------------------------------------------------------------- messaging
+  chrome.runtime.onMessage.addListener((msg, _s, respond) => {
+    try {
+      if (msg.cmd === 'ping') {
+        drain();
+        respond({ ok: true });
+      } else if (msg.cmd === 'status') {
+        drain();
+        const dv = derived();
+        respond({
+          ok: true,
+          running: state.running,
+          done: state.done,
+          mode: state.mode,
+          phase: state.phase,
+          rows: state.rows.length,
+          orders: new Set(state.rows.map((r) => r.orderId)).size,
+          progress: state.progress,
+          totalPages: dv.totalPages,
+          captures: state.captures.length,
+          capturePaths: state.captures.map((c) => pathOf(c.url)),
+          hasApi: dv.api,
+          hasDetailApi: dv.detail,
+          detailDiag: dv.diag,
+          log: state.log.slice(-12),
+        });
+      } else if (msg.cmd === 'run') {
+        if (state.running) respond({ ok: false, error: 'Already running' });
+        else { run(msg.opts || { startPage: 1, endPage: 0, delayMs: 600 }); respond({ ok: true }); }
+      } else if (msg.cmd === 'details') {
+        if (state.running) respond({ ok: false, error: 'Already running' });
+        else if (!state.rows.length) respond({ ok: false, error: 'Export the list first' });
+        else {
+          state.running = true; state.cancel = false; state.done = false;
+          runDetails(msg.delayMs || 400)
+            .then(() => { if (state.rows.length) downloadCsv(); finish('Dates added — CSV re-downloaded.'); })
+            .catch((e) => finish(`Detail pass failed: ${e.message}`));
+          respond({ ok: true });
+        }
+      } else if (msg.cmd === 'cancel') {
+        state.cancel = true; respond({ ok: true });
+      } else if (msg.cmd === 'csv') {
+        downloadCsv(); respond({ ok: true, rows: state.rows.length });
+      } else if (msg.cmd === 'json') {
+        downloadJson(); respond({ ok: true, rows: state.rows.length });
+      } else {
+        respond({ ok: false, error: 'unknown command' });
+      }
+    } catch (e) {
+      respond({ ok: false, error: e.message });
+    }
+    return true;
+  });
+
+  // Restore captures and any finished export, so navigating away from the list
+  // page (e.g. to open one order) does not lose the run.
+  drain();
+
+  (async () => {
+    const saved = await store.get(CAP_KEY);
+    if (Array.isArray(saved) && saved.length) {
+      const known = new Set(state.captures.map((c) => `${c.url}|${c.ts}`));
+      for (const c of saved) if (!known.has(`${c.url}|${c.ts}`)) state.captures.push(c);
+      keepNewestPerPath();
+      invalidate();
+    }
+
+    const prev = await store.get(RESULT_KEY);
+    if (prev && Array.isArray(prev.rows) && prev.rows.length && !state.rows.length && !state.running) {
+      state.rows = prev.rows;
+      state.raw = [];
+      state.done = true;
+      log(`Restored ${prev.rows.length} rows from the last export on this page.`);
+    }
+  })();
+
+  // Captures written by another tab (the order-detail page you open) land here.
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !changes[CAP_KEY]) return;
+      const next = changes[CAP_KEY].newValue;
+      if (!Array.isArray(next)) return;
+      const known = new Set(state.captures.map(capKey));
+      let added = 0;
+      for (const c of next) if (!known.has(capKey(c))) { state.captures.push(c); added++; }
+      if (!added) return;
+      keepNewestPerPath();
+      invalidate();   // a capture from another tab must re-enable the dates button
+    });
+  } catch (_) {}
+})();

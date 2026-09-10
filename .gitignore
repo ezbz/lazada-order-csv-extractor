@@ -1,0 +1,9 @@
+# Your exported order history — personal data. Never commit this.
+output/
+*.csv
+*.json
+!extension/manifest.json
+*.zip
+
+.DS_Store
+node_modules/
