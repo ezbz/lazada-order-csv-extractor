@@ -68,10 +68,10 @@ reloads. A large order history exceeds the default storage quota.
 Certify all three compliance checkboxes.
 
 ## Privacy policy URL
-https://github.com/<user>/<repo>/blob/main/PRIVACY.md
+https://github.com/ezbz/lazada-order-csv-extractor/blob/main/PRIVACY.md
 
 ## Still needed before submitting
 - [ ] Screenshots: 1280×800 or 640×400, at least one. Take them yourself — the popup
       mid-export, and a slice of the resulting CSV.
 - [ ] A $5 one-time Chrome Web Store developer registration fee.
-- [ ] Public privacy policy URL (works once the repo is public).
+- [x] Public privacy policy URL — live above.
