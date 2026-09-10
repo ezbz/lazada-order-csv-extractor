@@ -1,4 +1,8 @@
 const $ = (id) => document.getElementById(id);
+// Bind defensively: a missing element must not throw at load and take the
+// whole popup down with it.
+const on = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
+const set = (id, prop, val) => { const el = $(id); if (el) el[prop] = val; };
 const ORDER_PATH = '/customer/order/index/';
 const n = (v) => (v || 0).toLocaleString();
 
@@ -78,22 +82,22 @@ async function refresh() {
   if (s.ok) paint(s);
 }
 
-$('run').onclick = async () => {
+on('run', async () => {
   await send({ cmd: 'run', opts: {
     startPage: Math.max(1, Number($('start').value) || 1),
     endPage: Math.max(0, Number($('end').value) || 0),
     delayMs: Math.max(0, Number($('delay').value) || 0),
   } });
   refresh();
-};
-$('dates').onclick = async () => {
+});
+on('dates', async () => {
   await send({ cmd: 'details', delayMs: Math.max(0, Number($('delay').value) || 0) });
   refresh();
-};
-$('stop').onclick = () => send({ cmd: 'cancel' }).then(refresh);
-$('csv').onclick = () => send({ cmd: 'csv' });
-$('json').onclick = () => send({ cmd: 'json' });
-$('sample').onclick = () => send({ cmd: 'sample' });
+});
+on('stop', () => send({ cmd: 'cancel' }).then(refresh));
+on('csv', () => send({ cmd: 'csv' }));
+on('json', () => send({ cmd: 'json' }));
+on('sample', () => send({ cmd: 'sample' }));
 
 (async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
