@@ -181,10 +181,16 @@
         _shopMatch: match,
         orderId: f.tradeOrderId ?? '',
         lineId,
-        purchasedAt: '',   // list endpoint never populates dates; filled by the detail pass
+        purchasedAt: '',   // list endpoint never populates these; filled by the detail pass
         paidAt: '',
+        shippingFee: '',
+        discount: '',
+        subtotal: '',
+        refundAmount: '',
+        charges: '',
         status: shop.status || oi.status || d.status || '',
         itemStatus: f.status || '',   // e.g. "Refund issued" on individual lines
+        refunded: /refund|returned/i.test(String(f.status || '')) ? 'yes' : '',
         title: f.title ?? '',
         variation: sku.skuText ?? sku.productVariant ?? '',
         quantity: f.quantity ?? '',
@@ -375,13 +381,38 @@
   const DATEISH = /(20\d\d)|(\d{1,2}[\/\-\s][A-Za-z]{3})|^\d{13}$/;
 
   // Collect scalar values under date/payment/total-ish keys, wherever they sit.
+  // Ultron renders the price breakdown as label/value pairs, so the amount lives
+  // under a key called "value" and a key-name match never finds it. Capture the
+  // pair instead: that also yields shipping and voucher lines, which are exactly
+  // the difference between summed item prices and what was actually charged.
+  const MONEYISH = /^\s*-?\s*(?:฿|THB|RM|Rp|S\$|₱|₫)\s?-?[\d][\d,.]*\s*$/;
+  const LABEL_KEYS = ['title', 'label', 'name', 'key', 'text', 'desc', 'content'];
+  const VALUE_KEYS = ['value', 'price', 'amount', 'text', 'content', 'desc', 'subTitle'];
+
+  function labelledAmount(node) {
+    let label = '';
+    let value = '';
+    for (const k of LABEL_KEYS) {
+      const v = node[k];
+      if (typeof v === 'string' && v.trim() && !MONEYISH.test(v)) { label = v.trim(); break; }
+    }
+    if (!label) return null;
+    for (const k of VALUE_KEYS) {
+      const v = node[k];
+      if ((typeof v === 'string' || typeof v === 'number') && MONEYISH.test(String(v))) { value = String(v).trim(); break; }
+    }
+    return value ? { label, value } : null;
+  }
+
   function harvest(root) {
-    const out = { dates: {}, pay: {}, total: {} };
+    const out = { dates: {}, pay: {}, total: {}, lines: {} };
     const seen = new Set();
     (function walk(n, depth) {
       if (!n || typeof n !== 'object' || depth > 8 || seen.has(n)) return;
       seen.add(n);
       if (Array.isArray(n)) { n.forEach((v) => walk(v, depth + 1)); return; }
+      const pair = labelledAmount(n);
+      if (pair && !(pair.label in out.lines)) out.lines[pair.label] = pair.value;
       for (const [k, v] of Object.entries(n)) {
         if (isScalar(v) && v !== null && String(v).trim()) {
           const sv = String(v).trim();
@@ -546,18 +577,38 @@
       return '';
     };
 
+    // Pull the charged total and its components out of the breakdown.
+    const TOTAL_L = /^(grand\s*total|total\s*(payment|paid|amount)?|order\s*total|amount\s*paid|you\s*paid)\b/i;
+    const SHIP_L = /(shipping|delivery|freight|postage)/i;
+    const DISC_L = /(voucher|discount|promo|coupon|saving|rebate)/i;
+    const SUB_L = /(sub\s*total|merchandise|item\s*total|order\s*subtotal)/i;
+    const REFUND_L = /(refund|returned|cash\s*back|cashback|wallet|credited)/i;
+    const byLabel = (lines, re) => {
+      for (const [k, v] of Object.entries(lines)) if (re.test(k)) return v;
+      return '';
+    };
+
     let filled = 0;
+    let totalled = 0;
     for (const r of state.rows) {
       const h = enrich.get(String(r.orderId));
       if (!h) continue;
+      const lines = h.lines || {};
+      const charged = pick(h.total, ['totalamount', 'grandtotal', 'ordertotal'], 'any') || byLabel(lines, TOTAL_L);
+      if (charged) { r.orderTotal = charged; totalled++; }
+      r.shippingFee = byLabel(lines, SHIP_L);
+      r.discount = byLabel(lines, DISC_L);
+      r.subtotal = byLabel(lines, SUB_L);
+      r.refundAmount = byLabel(lines, REFUND_L);
+      // Everything the breakdown showed, so nothing is silently dropped.
+      r.charges = Object.entries(lines).map(([k, v]) => `${k}=${v}`).join(' | ');
       const purchased = pick(h.dates, ['gmtcreate', 'createtime', 'createdat', 'placedat', 'ordertime', 'ordercreatetime'], 'non-payment');
       const paid = pick(h.dates, ['paytime', 'paidat', 'paymenttime']);  // no fallback: never echo the purchase date
       if (purchased) { r.purchasedAt = purchased; filled++; }
       if (paid) r.paidAt = paid;
-      if (!r.orderTotal) r.orderTotal = pick(h.total, ['totalamount', 'grandtotal', 'ordertotal'], 'any');
-      if (!r.paymentMethod) r.paymentMethod = pick(h.pay, ['paymentmethod', 'paymentdes', 'paymethod'], 'any');
+      if (!r.paymentMethod) r.paymentMethod = pick(h.pay, ['paymentmethod', 'paymentdes', 'paymethod'], 'any') || byLabel(lines, /payment|paid\s*(via|with|by)/i);
     }
-    log(`Detail pass done — dated ${filled} of ${state.rows.length} rows across ${enrich.size} orders.`);
+    log(`Detail pass done — dated ${filled} rows, charged total on ${totalled}, across ${enrich.size} orders.`);
   }
 
   // --------------------------------------------------------------------- run

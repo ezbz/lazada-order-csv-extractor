@@ -93,6 +93,7 @@ $('dates').onclick = async () => {
 $('stop').onclick = () => send({ cmd: 'cancel' }).then(refresh);
 $('csv').onclick = () => send({ cmd: 'csv' });
 $('json').onclick = () => send({ cmd: 'json' });
+$('sample').onclick = () => send({ cmd: 'sample' });
 
 (async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });

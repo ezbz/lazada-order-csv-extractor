@@ -124,10 +124,38 @@ It rewrites `status`, adds `itemStatus`, and drops always-empty columns.
 
 ## Columns
 
-`orderId`, `lineId`, `status`, `itemStatus`, `title`, `variation`, `quantity`, `price`,
-`shopName`, `shopId`, `sellerId`, `itemId`, `skuId`, `orderDetailUrl`, `itemUrl`, `picUrl`,
-plus `purchasedAt` / `paidAt` / `orderTotal` / `paymentMethod` (detail pass only), plus every
-remaining API field passed through as `raw.*` and `shop.*` so nothing is dropped.
+One row per order **item**. An order with three products is three rows sharing an `orderId`.
+
+| Column | |
+|---|---|
+| `orderId`, `lineId` | Order, and the specific line within it |
+| `purchasedAt`, `paidAt` | Detail pass only. Run `tools/fix-dates.py` to get sortable ISO timestamps |
+| `title`, `variation`, `quantity`, `price` | The item, and its **list price** |
+| `status` | Delivered, Cancelled, Paid, Closed, … |
+| `itemStatus`, `refunded` | Line-level state (*Refund issued*, *Refund completed*) and a yes/blank flag |
+| `orderTotal` | Detail pass only. What was actually **charged** |
+| `subtotal`, `shippingFee`, `discount`, `refundAmount` | The checkout breakdown behind that total |
+| `charges` | Every breakdown line verbatim, `Label=Value` separated by `\|` |
+| `shopName`, `shopId`, `sellerId` | Who you bought from |
+| `orderDetailUrl`, `itemUrl`, `picUrl` | Links back to Lazada |
+| `raw.*`, `shop.*` | Every other field Lazada returned |
+
+### Item prices are not what you paid
+
+`price` is the line's list price. The amount charged differs — shipping is added and
+vouchers deducted at checkout. On a real account the gap was a median of ฿50 and as much
+as ฿288 per order, and **summed line prices matched the charged total on none of them**.
+
+For anything money-related, use `orderTotal` and the breakdown columns, not `sum(price)`.
+Those come from the detail pass; without it you have list prices only.
+
+### Refunds
+
+Lazada refunds to the Lazada Wallet, so a refunded order still looks like spend unless you
+account for it. Two columns carry this: `refunded` flags lines whose status is a refund
+state, and `refundAmount` holds the amount when the order's breakdown lists one. Net spend
+is `orderTotal - refundAmount`; the extractor does not compute it for you, because a
+partial refund on a multi-item order cannot be split across lines reliably.
 
 ## Notes
 

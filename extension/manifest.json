@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Lazada Order CSV Extractor",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Export your Lazada order history to CSV \u2014 every item, price, status and shop, with optional purchase dates.",
   "action": {
     "default_popup": "popup.html",
