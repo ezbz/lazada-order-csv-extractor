@@ -2,7 +2,6 @@ const $ = (id) => document.getElementById(id);
 // Bind defensively: a missing element must not throw at load and take the
 // whole popup down with it.
 const on = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
-const set = (id, prop, val) => { const el = $(id); if (el) el[prop] = val; };
 const ORDER_PATH = '/customer/order/index/';
 const n = (v) => (v || 0).toLocaleString();
 
@@ -10,6 +9,7 @@ let tabId = null;
 let ready = false;
 
 const send = (msg) => new Promise((resolve) => {
+  if (typeof tabId !== 'number') { resolve({ ok: false, error: 'no tab' }); return; }
   chrome.tabs.sendMessage(tabId, msg, (res) => {
     resolve(chrome.runtime.lastError ? { ok: false, error: chrome.runtime.lastError.message } : (res || { ok: false }));
   });
@@ -55,6 +55,7 @@ function paint(s) {
   $('stop').disabled = !s.running;
   $('csv').disabled = !s.rows || s.running;
   $('json').disabled = !s.rows || s.running;
+  $('sample').disabled = s.running || !s.captures;
 
   const dates = $('dates');
   dates.disabled = s.running || !s.rows || !s.hasDetailApi;

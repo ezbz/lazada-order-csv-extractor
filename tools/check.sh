@@ -24,6 +24,21 @@ print('  referenced but not in the HTML:', missing or 'none')
 sys.exit(1 if missing else 0)
 PY
 
+echo "buttons that call send() must start disabled"
+python3 - <<'PY2' || fail=1
+import re, sys
+html = open('extension/popup.html').read()
+js = open('extension/popup.js').read()
+bound = set(re.findall(r"on\('([a-zA-Z]+)'", js))
+bad = []
+for m in re.finditer(r'<button([^>]*)id="([a-zA-Z]+)"([^>]*)>', html):
+    attrs, bid = m.group(1) + m.group(3), m.group(2)
+    if bid in bound and bid != 'run' and 'disabled' not in attrs:
+        bad.append(bid)
+print('  clickable before a tab is attached:', bad or 'none')
+sys.exit(1 if bad else 0)
+PY2
+
 echo "manifest"
 python3 - <<'PY' || fail=1
 import json, os, sys
