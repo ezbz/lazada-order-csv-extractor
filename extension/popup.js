@@ -56,6 +56,7 @@ function paint(s) {
   $('csv').disabled = !s.rows || s.running;
   $('json').disabled = !s.rows || s.running;
   $('sample').disabled = s.running || !s.captures;
+  $('report').disabled = !s.rows || s.running;
 
   const dates = $('dates');
   dates.disabled = s.running || !s.rows || !s.hasDetailApi;
@@ -99,6 +100,7 @@ on('stop', () => send({ cmd: 'cancel' }).then(refresh));
 on('csv', () => send({ cmd: 'csv' }));
 on('json', () => send({ cmd: 'json' }));
 on('sample', () => send({ cmd: 'sample' }));
+on('report', () => send({ cmd: 'report' }));
 
 (async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });

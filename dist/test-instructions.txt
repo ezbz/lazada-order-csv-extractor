@@ -1,0 +1,8 @@
+No test account is supplied: the extension reads the signed-in user's own Lazada order history, so sharing a real account would expose personal purchase data.
+
+To test, use any Lazada account (lazada.co.th / .sg / .com.my / .co.id / .com.ph / .vn) with at least one order:
+1. Sign in, open My Orders.
+2. Click the extension icon, then "Export all orders to CSV".
+3. A CSV downloads with one row per item.
+
+The extension performs no login of its own; it reuses the browser session.

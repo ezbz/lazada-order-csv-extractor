@@ -1,4 +1,4 @@
-# Privacy Policy — Lazada Order CSV Extractor
+# Privacy Policy — Order History to CSV
 
 _Last updated: 10 September 2026_
 
@@ -36,7 +36,7 @@ The extension keeps two things in your browser's local extension storage:
 - your most recent export, so the results survive navigating away from the order list.
 
 Both are local to your browser and are removed when you uninstall the extension. You can
-clear them at any time from `chrome://extensions` → **Lazada Order CSV Extractor** →
+clear them at any time from `chrome://extensions` → **Order History to CSV** →
 remove and reinstall.
 
 ## What it never does

@@ -1,0 +1,252 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>My Lazada purchases</title>
+<style>
+  :root{
+    color-scheme: light dark;
+    --paper:#fff; --ink:#14252f; --muted:#5d7180; --rule:#dce4e8;
+    --accent:#0b7a96; --accent-ink:#fff; --soft:#f2f7f9; --shade:#f7fafb;
+    --good:#0f7a4a; --bad:#a8342a; --warn:#8a5a10;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --paper:#0e1a21; --ink:#e8eff2; --muted:#8ba1ad; --rule:#22333c;
+           --accent:#2ea2c0; --accent-ink:#06222b; --soft:#152530; --shade:#122029;
+           --good:#4cc38a; --bad:#f07a6e; --warn:#d9a441; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 20px 60px}
+
+  h1{font-size:22px;font-weight:640;letter-spacing:-.02em;margin:0 0 4px}
+  .sub{color:var(--muted);font-size:13px;margin:0 0 22px}
+
+  .stats{display:flex;gap:28px;flex-wrap:wrap;padding:16px 18px;background:var(--soft);
+         border-radius:10px;margin-bottom:18px}
+  .stat b{display:block;font-size:22px;font-weight:640;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+  .stat span{font-size:12px;color:var(--muted)}
+
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px;
+       position:sticky;top:0;background:var(--paper);padding:10px 0;z-index:5;border-bottom:1px solid var(--rule)}
+  input[type=search],select{font:inherit;color:var(--ink);background:var(--paper);
+       border:1px solid var(--rule);border-radius:8px;padding:7px 10px}
+  input[type=search]{flex:1;min-width:210px}
+  input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  button{font:inherit;color:var(--ink);background:var(--paper);border:1px solid var(--rule);
+         border-radius:8px;padding:7px 11px;cursor:pointer}
+  button:hover:not(:disabled){border-color:var(--muted)}
+  button:disabled{opacity:.4;cursor:default}
+  .chip{background:var(--soft);border-color:transparent}
+
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;font-size:12px;font-weight:600;color:var(--muted);padding:8px 10px;
+     border-bottom:1px solid var(--rule);cursor:pointer;white-space:nowrap;user-select:none}
+  th:hover{color:var(--ink)}
+  th .ar{opacity:.45;font-size:10px}
+  td{padding:10px;border-bottom:1px solid var(--rule);vertical-align:top}
+  tr:hover td{background:var(--shade)}
+  .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+
+  .thumb{width:52px;height:52px;border-radius:7px;object-fit:cover;background:var(--soft);display:block}
+  .title{font-weight:500;line-height:1.35}
+  .title a{color:inherit;text-decoration:none}
+  .title a:hover{text-decoration:underline}
+  .vari{color:var(--muted);font-size:12px;margin-top:2px}
+  .shop{color:var(--muted);font-size:12.5px;white-space:nowrap}
+  .when{white-space:nowrap;font-variant-numeric:tabular-nums}
+  .when small{display:block;color:var(--muted);font-size:11px}
+
+  .tag{display:inline-block;font-size:11px;padding:2px 7px;border-radius:20px;background:var(--soft);white-space:nowrap}
+  .tag.ok{color:var(--good)} .tag.no{color:var(--bad)} .tag.rf{color:var(--warn)}
+
+  .pager{display:flex;gap:8px;align-items:center;justify-content:center;margin-top:20px;flex-wrap:wrap}
+  .pager .pos{color:var(--muted);font-size:12.5px;font-variant-numeric:tabular-nums}
+  .empty{padding:60px 20px;text-align:center;color:var(--muted)}
+  footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--rule);color:var(--muted);font-size:12px}
+</style>
+
+<div class="wrap">
+  <h1>My Lazada purchases</h1>
+  <p class="sub" id="sub"></p>
+
+  <div class="stats">
+    <div class="stat"><b id="sItems">0</b><span>items shown</span></div>
+    <div class="stat"><b id="sOrders">0</b><span>orders</span></div>
+    <div class="stat"><b id="sSpend">฿0</b><span>item prices, shown</span></div>
+    <div class="stat"><b id="sCharged">฿0</b><span>charged, where known</span></div>
+    <div class="stat"><b id="sShops">0</b><span>shops</span></div>
+  </div>
+
+  <div class="bar">
+    <input type="search" id="q" placeholder="Search items, shops, order ids…" autocomplete="off">
+    <select id="fStatus"><option value="">Any status</option></select>
+    <select id="fShop"><option value="">Any shop</option></select>
+    <select id="fYear"><option value="">Any year</option></select>
+    <select id="size"><option>25</option><option selected>50</option><option>100</option><option>250</option></select>
+    <button class="chip" id="reset">Clear</button>
+  </div>
+
+  <table>
+    <thead><tr>
+      <th data-k="_i" style="width:64px"></th>
+      <th data-k="title">Item</th>
+      <th data-k="shopName">Shop</th>
+      <th data-k="purchasedAt">Ordered</th>
+      <th data-k="qty" class="num">Qty</th>
+      <th data-k="priceN" class="num">Price</th>
+      <th data-k="status">Status</th>
+    </tr></thead>
+    <tbody id="body"></tbody>
+  </table>
+
+  <div id="empty" class="empty" hidden>Nothing matches those filters.</div>
+
+  <div class="pager">
+    <button id="first">« First</button><button id="prev">‹ Prev</button>
+    <span class="pos" id="pos"></span>
+    <button id="next">Next ›</button><button id="last">Last »</button>
+  </div>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+const DATA = /*__DATA__*/[];
+const META = /*__META__*/{};
+
+const money = v => {
+  const s = String(v == null ? '' : v);
+  if (/free/i.test(s)) return 0;
+  const neg = /-/.test(s);
+  const n = parseFloat(s.replace(/[^0-9.]/g, ''));
+  return isNaN(n) ? 0 : (neg ? -n : n);
+};
+const baht = n => '฿' + Math.round(n).toLocaleString();
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// Normalise once; the table re-sorts and re-filters against these.
+DATA.forEach((r, i) => {
+  r._i = i;
+  r.priceN = money(r.price);
+  r.qty = parseInt(r.quantity, 10) || 0;
+  r.totalN = money(r.orderTotal);
+  r.year = (r.purchasedAt || '').slice(0, 4);
+  r._hay = [r.title, r.variation, r.shopName, r.orderId, r.status, r.itemStatus].join(' ').toLowerCase();
+});
+
+const $ = id => document.getElementById(id);
+const state = { q: '', status: '', shop: '', year: '', sort: 'purchasedAt', dir: -1, page: 1, size: 50 };
+
+const fill = (sel, vals) => {
+  vals.filter(Boolean).sort().forEach(v => {
+    const o = document.createElement('option'); o.value = o.textContent = v; sel.appendChild(o);
+  });
+};
+fill($('fStatus'), [...new Set(DATA.map(r => r.status))]);
+fill($('fShop'), [...new Set(DATA.map(r => r.shopName))]);
+fill($('fYear'), [...new Set(DATA.map(r => r.year))].filter(y => y));
+if (!DATA.some(r => r.year)) $('fYear').disabled = true;
+
+function filtered() {
+  const q = state.q.trim().toLowerCase();
+  const terms = q ? q.split(/\s+/) : [];
+  return DATA.filter(r =>
+    (!state.status || r.status === state.status) &&
+    (!state.shop || r.shopName === state.shop) &&
+    (!state.year || r.year === state.year) &&
+    terms.every(t => r._hay.includes(t)));
+}
+
+function render() {
+  const rows = filtered();
+  const k = state.sort;
+  rows.sort((a, b) => {
+    let x = a[k], y = b[k];
+    if (typeof x === 'number' || typeof y === 'number') return ((x || 0) - (y || 0)) * state.dir;
+    return String(x || '').localeCompare(String(y || '')) * state.dir;
+  });
+
+  // Stats reflect the current filter, not the whole file.
+  const orders = new Set(rows.map(r => r.orderId));
+  const charged = new Map();
+  rows.forEach(r => { if (r.totalN) charged.set(r.orderId, r.totalN); });
+  $('sItems').textContent = rows.length.toLocaleString();
+  $('sOrders').textContent = orders.size.toLocaleString();
+  $('sSpend').textContent = baht(rows.reduce((s, r) => s + r.priceN * (r.qty || 1), 0));
+  $('sCharged').textContent = baht([...charged.values()].reduce((s, n) => s + n, 0));
+  $('sShops').textContent = new Set(rows.map(r => r.shopName)).size.toLocaleString();
+
+  const pages = Math.max(1, Math.ceil(rows.length / state.size));
+  state.page = Math.min(state.page, pages);
+  const start = (state.page - 1) * state.size;
+  const slice = rows.slice(start, start + state.size);
+
+  $('body').innerHTML = slice.map(r => {
+    const cls = /cancel|closed/i.test(r.status) ? 'no' : (/refund/i.test(r.itemStatus || '') ? 'rf' : 'ok');
+    const when = r.purchasedAt
+      ? `${esc(r.purchasedAt.slice(0, 10))}<small>${esc(r.purchasedAt.slice(11, 16))}</small>`
+      : '<span style="color:var(--muted)">—</span>';
+    const img = r.picUrl
+      ? `<img class="thumb" loading="lazy" src="${esc(r.picUrl)}" alt="" onerror="this.style.visibility='hidden'">`
+      : '<div class="thumb"></div>';
+    const name = r.itemUrl
+      ? `<a href="${esc(r.itemUrl)}" target="_blank" rel="noreferrer">${esc(r.title)}</a>`
+      : esc(r.title);
+    return `<tr>
+      <td>${img}</td>
+      <td><div class="title">${name}</div>${r.variation ? `<div class="vari">${esc(r.variation)}</div>` : ''}</td>
+      <td class="shop">${esc(r.shopName)}</td>
+      <td class="when">${when}</td>
+      <td class="num">${r.qty || ''}</td>
+      <td class="num">${esc(r.price)}</td>
+      <td><span class="tag ${cls}">${esc(r.itemStatus || r.status)}</span></td>
+    </tr>`;
+  }).join('');
+
+  $('empty').hidden = rows.length > 0;
+  $('pos').textContent = rows.length
+    ? `${(start + 1).toLocaleString()}–${Math.min(start + state.size, rows.length).toLocaleString()} of ${rows.length.toLocaleString()}  ·  page ${state.page} of ${pages}`
+    : '';
+  $('first').disabled = $('prev').disabled = state.page <= 1;
+  $('next').disabled = $('last').disabled = state.page >= pages;
+
+  document.querySelectorAll('th[data-k]').forEach(th => {
+    const base = th.textContent.replace(/ *[▲▼]$/, '');
+    th.innerHTML = esc(base) + (th.dataset.k === state.sort ? ` <span class="ar">${state.dir > 0 ? '▲' : '▼'}</span>` : '');
+  });
+}
+
+let t;
+$('q').oninput = e => { clearTimeout(t); t = setTimeout(() => { state.q = e.target.value; state.page = 1; render(); }, 140); };
+['fStatus', 'fShop', 'fYear'].forEach((id, i) => {
+  $(id).onchange = e => { state[['status', 'shop', 'year'][i]] = e.target.value; state.page = 1; render(); };
+});
+$('size').onchange = e => { state.size = +e.target.value; state.page = 1; render(); };
+$('reset').onclick = () => {
+  Object.assign(state, { q: '', status: '', shop: '', year: '', page: 1 });
+  $('q').value = ''; $('fStatus').value = ''; $('fShop').value = ''; $('fYear').value = '';
+  render();
+};
+document.querySelectorAll('th[data-k]').forEach(th => {
+  th.onclick = () => {
+    const k = th.dataset.k;
+    if (!k || k === '_i') return;
+    if (state.sort === k) state.dir *= -1; else { state.sort = k; state.dir = (k === 'title' || k === 'shopName') ? 1 : -1; }
+    render();
+  };
+});
+$('first').onclick = () => { state.page = 1; render(); scrollTo(0, 0); };
+$('prev').onclick = () => { state.page--; render(); scrollTo(0, 0); };
+$('next').onclick = () => { state.page++; render(); scrollTo(0, 0); };
+$('last').onclick = () => { state.page = 1e9; render(); scrollTo(0, 0); };
+
+const dated = DATA.filter(r => r.purchasedAt).length;
+$('sub').textContent = `${DATA.length.toLocaleString()} items across `
+  + `${new Set(DATA.map(r => r.orderId)).size.toLocaleString()} orders`
+  + (dated ? `, ${dated === DATA.length ? 'all dated' : dated.toLocaleString() + ' dated'}` : ', no dates — run the date pass to add them');
+$('foot').textContent = `Exported ${META.exported || ''} from your own Lazada account. `
+  + `This file works offline; product images load from Lazada.`;
+
+render();
+</script>

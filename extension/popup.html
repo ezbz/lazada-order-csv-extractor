@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Lazada Order CSV Extractor</title>
+<title>Order History to CSV</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -85,7 +85,7 @@
   }
 </style>
 
-<p class="wordmark">Lazada Order CSV Extractor</p>
+<p class="wordmark">Order History to CSV</p>
 
 <div class="count" id="count">—</div>
 <div class="sub" id="sub">Checking this page</div>
@@ -102,6 +102,10 @@ does not return them.</p>
 <button id="dates" class="secondary" disabled>Add purchase dates</button>
 <p class="note" id="datesNote">Adds the date each order was placed. This reads one order at a time,
 so it takes far longer than the export. Skip it unless you need spending over time.</p>
+
+<button id="report" class="secondary" style="margin-top:12px" disabled>Save as browsable page</button>
+<p class="note">A single HTML file with product photos, search, filters and sorting. Opens in
+any browser, works offline, nothing to install.</p>
 
 <div class="row">
   <button id="csv" disabled>Save CSV again</button>

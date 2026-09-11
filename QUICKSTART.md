@@ -17,10 +17,10 @@ normal and takes a minute.
 3. Turn on **Developer mode** — the toggle is in the top-right corner.
 4. Click **Load unpacked** (top-left) and select the **`extension`** folder inside the
    unzipped folder. Not the outer folder — the one containing `manifest.json`.
-5. You should now see *Lazada Order CSV Extractor* in the list, with a teal download icon.
+5. You should now see *Order History to CSV* in the list, with a teal download icon.
 
 **Pin it, or you will not find it again.** Click the puzzle-piece icon to the right of
-Chrome's address bar, find *Lazada Order CSV Extractor*, and click the pin next to it.
+Chrome's address bar, find *Order History to CSV*, and click the pin next to it.
 The icon then sits in your toolbar. Chrome hides new extensions by default — this step is
 not optional in practice.
 

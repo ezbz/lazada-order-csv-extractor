@@ -186,6 +186,7 @@
         shippingFee: '',
         discount: '',
         subtotal: '',
+        cashback: '',
         refundAmount: '',
         charges: '',
         status: shop.status || oi.status || d.status || '',
@@ -578,15 +579,32 @@
     };
 
     // Pull the charged total and its components out of the breakdown.
-    const TOTAL_L = /^(grand\s*total|total\s*(payment|paid|amount)?|order\s*total|amount\s*paid|you\s*paid)\b/i;
-    const SHIP_L = /(shipping|delivery|freight|postage)/i;
-    const DISC_L = /(voucher|discount|promo|coupon|saving|rebate)/i;
-    const SUB_L = /(sub\s*total|merchandise|item\s*total|order\s*subtotal)/i;
-    const REFUND_L = /(refund|returned|cash\s*back|cashback|wallet|credited)/i;
-    const byLabel = (lines, re) => {
-      for (const [k, v] of Object.entries(lines)) if (re.test(k)) return v;
-      return '';
+    // Classification verified against 2,721 real breakdown lines. The naive
+    // keyword match was wrong in three ways: "Shipping Fee Voucher" and
+    // "Standard Delivery" both matched the shipping pattern and could win over
+    // the actual fee; discounts are spread across seven labels and only the
+    // first was kept; and "Cashback earned" was read as a refund.
+    const kindOf = (label) => {
+      const l = label.trim().toLowerCase();
+      if (/^total\b/.test(l)) return 'total';
+      if (/^sub\s*total/.test(l)) return 'subtotal';
+      if (l.includes('shipping fee')) return /voucher|promo|discount/.test(l) ? 'discount' : 'shipping';
+      // "Standard Delivery" / "Economy Delivery" head a package block and carry
+      // that package's total, not a charge.
+      if (/\bdelivery\b/.test(l)) return 'package_total';
+      if (l.includes('cashback')) return 'cashback';
+      if (/refund|returned|credited/.test(l)) return 'refund';
+      if (/voucher|discount|promo|coupon|coins|rebate/.test(l)) return 'discount';
+      return 'other';   // product rows and anything unrecognised
     };
+    const amount = (v) => {
+      const str = String(v == null ? '' : v);
+      if (/free/i.test(str)) return 0;
+      const n = parseFloat(str.replace(/[^0-9.]/g, ''));
+      if (!isFinite(n)) return 0;
+      return /-/.test(str) ? -n : n;
+    };
+    const fmt = (n) => (n ? n.toFixed(2) : '');
 
     let filled = 0;
     let totalled = 0;
@@ -594,19 +612,30 @@
       const h = enrich.get(String(r.orderId));
       if (!h) continue;
       const lines = h.lines || {};
-      const charged = pick(h.total, ['totalamount', 'grandtotal', 'ordertotal'], 'any') || byLabel(lines, TOTAL_L);
-      if (charged) { r.orderTotal = charged; totalled++; }
-      r.shippingFee = byLabel(lines, SHIP_L);
-      r.discount = byLabel(lines, DISC_L);
-      r.subtotal = byLabel(lines, SUB_L);
-      r.refundAmount = byLabel(lines, REFUND_L);
-      // Everything the breakdown showed, so nothing is silently dropped.
+
+      const sums = {};
+      for (const [label, value] of Object.entries(lines)) {
+        const k = kindOf(label);
+        if (k === 'other') continue;
+        sums[k] = (sums[k] || 0) + amount(value);
+      }
+
+      const charged = amount(pick(h.total, ['totalamount', 'grandtotal', 'ordertotal'], 'any'))
+        || sums.total || sums.package_total || 0;
+      if (charged) { r.orderTotal = fmt(charged); totalled++; }
+      r.subtotal     = fmt(sums.subtotal);
+      r.shippingFee  = fmt(sums.shipping);
+      r.discount     = fmt(Math.abs(sums.discount || 0));   // reported as a magnitude
+      r.cashback     = fmt(Math.abs(sums.cashback || 0));
+      r.refundAmount = fmt(Math.abs(sums.refund || 0));
       r.charges = Object.entries(lines).map(([k, v]) => `${k}=${v}`).join(' | ');
       const purchased = pick(h.dates, ['gmtcreate', 'createtime', 'createdat', 'placedat', 'ordertime', 'ordercreatetime'], 'non-payment');
       const paid = pick(h.dates, ['paytime', 'paidat', 'paymenttime']);  // no fallback: never echo the purchase date
       if (purchased) { r.purchasedAt = purchased; filled++; }
       if (paid) r.paidAt = paid;
-      if (!r.paymentMethod) r.paymentMethod = pick(h.pay, ['paymentmethod', 'paymentdes', 'paymethod'], 'any') || byLabel(lines, /payment|paid\s*(via|with|by)/i);
+      // No breakdown fallback here: the breakdown only holds money values, and a
+      // payment method is not one, so it never appears there.
+      if (!r.paymentMethod) r.paymentMethod = pick(h.pay, ['paymentmethod', 'paymentdes', 'paymethod'], 'any');
     }
     log(`Detail pass done — dated ${filled} rows, charged total on ${totalled}, across ${enrich.size} orders.`);
   }
@@ -737,6 +766,26 @@
     setTimeout(() => URL.revokeObjectURL(url), 30000);
   }
 
+  // A standalone page with the data inlined, so it opens from disk with no
+  // server. Product images are the only thing still fetched from Lazada.
+  async function buildReport() {
+    if (!state.rows.length) throw new Error('Export the list first');
+    const keep = ['orderId', 'purchasedAt', 'title', 'variation', 'quantity', 'price',
+                  'orderTotal', 'status', 'itemStatus', 'shopName', 'itemUrl', 'picUrl'];
+    const slim = state.rows.map((r) => {
+      const o = {};
+      for (const k of keep) if (r[k] !== undefined && r[k] !== '') o[k] = r[k];
+      return o;
+    });
+    const meta = { exported: new Date().toLocaleString(), rows: slim.length };
+    const tpl = await fetch(chrome.runtime.getURL('report.html')).then((r) => r.text());
+    // A "</script>" inside the data would close the tag early.
+    const safe = (v) => JSON.stringify(v).replace(/</g, '\\u003c');
+    const html = tpl.replace('/*__DATA__*/[]', safe(slim)).replace('/*__META__*/{}', safe(meta));
+    download(`lazada-purchases-${stamp()}.html`, html, 'text/html');
+    log(`Saved a browsable page with ${slim.length} items.`);
+  }
+
   const stamp = () => new Date().toISOString().slice(0, 10);
   const downloadCsv = () => download(`lazada-orders-${stamp()}.csv`, toCsv(state.rows), 'text/csv');
   const downloadJson = () => download(`lazada-orders-${stamp()}.json`, JSON.stringify(state.raw.length ? state.raw : state.rows, null, 2), 'application/json');
@@ -786,6 +835,23 @@
         downloadCsv(); respond({ ok: true, rows: state.rows.length });
       } else if (msg.cmd === 'json') {
         downloadJson(); respond({ ok: true, rows: state.rows.length });
+      } else if (msg.cmd === 'report') {
+        buildReport().then(() => respond({ ok: true })).catch((e) => respond({ ok: false, error: e.message }));
+        return true;
+      } else if (msg.cmd === 'sample') {
+        // Ground truth for mapping fields the harvest does not recognise.
+        const ids = new Set(state.rows.map((r) => String(r.orderId)).filter(Boolean));
+        const cap = ids.size ? pickDetailCapture(ids) : null;
+        const rec = cap ? cap.rec : state.captures[state.captures.length - 1];
+        if (!rec) { respond({ ok: false, error: 'Nothing recorded yet' }); }
+        else {
+          download('lazada-detail-sample.json', JSON.stringify({
+            url: rec.url, method: rec.method,
+            requestBody: safeParse(rec.reqBody) || rec.reqBody,
+            response: safeParse(rec.body) || rec.body,
+          }, null, 2), 'application/json');
+          respond({ ok: true });
+        }
       } else {
         respond({ ok: false, error: 'unknown command' });
       }

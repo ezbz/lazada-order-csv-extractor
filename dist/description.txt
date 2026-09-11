@@ -1,0 +1,25 @@
+Lazada gives you no way to export your purchase history. If you want it in a
+spreadsheet, you are left paging through your order list by hand.
+
+This extension does it for you. Open My Orders, click once, and get a CSV of every
+item you have ever bought.
+
+What you get, one row per item:
+• Item title, variation, quantity and price
+• Order status, plus line-level states such as "Refund issued"
+• Shop name and seller
+• Links back to the order and the product
+• Every other field Lazada returns, kept as extra columns
+
+Optionally, a second pass adds the date each order was placed. Lazada's order list
+does not include dates, so this reads each order individually — slower, and entirely
+up to you whether to run it.
+
+The file is UTF-8 with a BOM, so Thai text and ฿ open correctly in Excel, Numbers and
+Google Sheets.
+
+Privacy: there is no server, no account, no analytics. The extension only talks to
+Lazada, using your existing signed-in session, and writes the CSV to your computer.
+Nothing is transmitted anywhere else. Source code is public.
+
+Not affiliated with, endorsed by, or connected to Lazada.

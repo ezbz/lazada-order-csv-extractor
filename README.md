@@ -1,4 +1,4 @@
-# Lazada Order CSV Extractor
+# Order History to CSV
 
 Lazada has no export. This gets your entire purchase history into a CSV — every item,
 price, status and shop — instead of clicking through a hundred-plus pages by hand.
@@ -13,7 +13,7 @@ Not affiliated with, endorsed by, or connected to Lazada.
 ## Use the extension
 
 1. `chrome://extensions` → **Developer mode** → **Load unpacked** → pick `extension/`.
-2. Pin it: puzzle-piece icon in the toolbar → pin **Lazada Order CSV Extractor**.
+2. Pin it: puzzle-piece icon in the toolbar → pin **Order History to CSV**.
 3. Open Lazada → **My Orders** → click the icon.
 
 ### Step 1 — Export all orders to CSV
