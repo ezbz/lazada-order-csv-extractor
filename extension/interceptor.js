@@ -6,12 +6,26 @@
   window.__LZX_INTERCEPTOR__ = true;
 
   const MAX_BODY = 400000;
-  const interesting = (url) => /order/i.test(url) || /\/api\/async\//i.test(url);
+  const interesting = (url) => {
+    try {
+      // Pathname only: a query string carries spm tokens and search terms that
+      // would otherwise drag in cart, checkout and address-book responses.
+      return /order/i.test(new URL(url, location.href).pathname);
+    } catch (_) {
+      return false;
+    }
+  };
 
   // Requests fire during page load, potentially before the ISOLATED-world
   // listener exists. Buffer them so they can be replayed on demand.
   const buffer = [];
-  const emit = (rec) => { try { window.postMessage({ __lzx: 'capture', rec }, '*'); } catch (_) {} };
+  let port = null;
+  const emit = (rec) => {
+    try {
+      if (port) port.postMessage({ __lzx: 'capture', rec });
+      else window.postMessage({ __lzx: 'capture', rec }, '*');
+    } catch (_) {}
+  };
   const post = (rec) => {
     buffer.push(rec);
     if (buffer.length > 20) buffer.shift();
@@ -19,8 +33,15 @@
   };
 
   window.addEventListener('message', (e) => {
-    if (e.source !== window || !e.data || e.data.__lzx !== 'drain') return;
-    for (const rec of buffer) emit(rec);
+    if (e.source !== window || !e.data) return;
+    if (e.data.__lzx === 'connect') {
+      const ch = new MessageChannel();
+      port = ch.port1;
+      window.postMessage({ __lzx: 'port' }, '*', [ch.port2]);
+      for (const rec of buffer) emit(rec);
+      return;
+    }
+    if (e.data.__lzx === 'drain') for (const rec of buffer) emit(rec);
   });
 
   // Bodies arrive as strings, URLSearchParams or FormData; keep what is replayable.

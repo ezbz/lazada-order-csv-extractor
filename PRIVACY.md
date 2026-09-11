@@ -43,7 +43,13 @@ remove and reinstall.
 
 - It never sends your data anywhere. There are no network requests to any domain other
   than Lazada's own, and those are the requests Lazada's own pages already make.
-- It never reads pages other than Lazada order pages.
+- It runs only on Lazada domains, and records only responses from Lazada's own
+  order endpoints. Other requests the site makes — cart, checkout, address book — are
+  not recorded.
+- Captured order data is passed between the extension's own scripts over a private
+  channel rather than being broadcast into the page. Note that anything rendered on a
+  Lazada page is, by the nature of the web, already visible to scripts Lazada loads
+  there; this extension adds nothing to that exposure.
 - It never touches passwords, payment details, or your Lazada credentials.
 - It contains no analytics, telemetry, tracking, or advertising code.
 

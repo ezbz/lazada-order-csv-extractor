@@ -32,6 +32,25 @@
   const getText = (el) => ((el && (el.innerText || el.textContent)) || '').trim();
   const safeParse = (t) => { try { return JSON.parse(t); } catch (_) { return null; } };
 
+  // Thailand writes 1,234.50 but Indonesia and Vietnam write 1.234.500, so a
+  // dot is only a decimal point when one or two digits follow it.
+  function parseMoney(v) {
+    const str = String(v == null ? '' : v).trim();
+    if (!str || /free/i.test(str)) return 0;
+    let t = str.replace(/[^0-9.,]/g, '');
+    if (!t) return 0;
+    const dec = t.match(/[.,](\d{1,2})$/);
+    if (dec) {
+      const at = t.length - dec[0].length;
+      t = t.slice(0, at).replace(/[.,]/g, '') + '.' + t.slice(at + 1);
+    } else {
+      t = t.replace(/[.,]/g, '');
+    }
+    const n = parseFloat(t);
+    if (!isFinite(n)) return 0;
+    return str.includes('-') ? -n : n;
+  }
+
   const PAGE_KEYS = /^(page|pagenum|pageno|pageindex|pagenumber|currentpage|curpage|pn)$/i;
   const MONEY = /(?:฿|THB|RM|Rp|S\$|₱|₫|\$)\s?\d[\d.,]*/g;
   const PRICEY = /(?:฿|THB|RM|Rp|S\$|₱|₫)\s?\d/;
@@ -42,11 +61,29 @@
     get(k) { return new Promise((res) => { try { chrome.storage.local.get(k, (o) => res(o && o[k])); } catch (_) { res(null); } }); },
   };
 
-  const drain = () => { try { window.postMessage({ __lzx: 'drain' }, '*'); } catch (_) {} };
+  // Captures arrive over a transferred MessagePort so they are not broadcast to
+  // every script on the page; window.postMessage is only the handshake.
+  let capturePort = null;
+  const drain = () => {
+    try {
+      window.postMessage({ __lzx: capturePort ? 'drain' : 'connect' }, '*');
+    } catch (_) {}
+  };
+
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data || e.data.__lzx !== 'port') return;
+    const port = e.ports && e.ports[0];
+    if (!port) return;
+    capturePort = port;
+    capturePort.onmessage = (ev) => acceptCapture(ev.data);
+  });
 
   window.addEventListener('message', (e) => {
     if (e.source !== window) return;
-    const d = e.data;
+    acceptCapture(e.data);
+  });
+
+  function acceptCapture(d) {
     if (!d || d.__lzx !== 'capture' || !d.rec) return;
     // Only accept same-origin records: anything on the page can post here.
     let origin = '';
@@ -61,9 +98,15 @@
     keepNewestPerPath();
     invalidate();
     scheduleSave();
-  });
+  }
 
   const capKey = (c) => `${c.url}|${c.ts}`;
+
+  // Storage is shared across all six Lazada origins; a capture from another
+  // market would be replayed cross-origin and fail, or worse, be trusted.
+  const sameOrigin = (c) => {
+    try { return new URL(c.url).origin === location.origin; } catch (_) { return false; }
+  };
 
   // Bodies run ~75KB each; batch writes rather than one per record.
   let saveTimer = null;
@@ -97,8 +140,13 @@
   // capture the date pass depends on.
   function keepNewestPerPath() {
     const byPath = new Map();
-    for (const c of state.captures) byPath.set(pathOf(c.url), c);
-    state.captures = [...byPath.values()].slice(-10);
+    for (const c of state.captures) {
+      const k = pathOf(c.url);
+      const seen = byPath.get(k);
+      if (!seen || (c.ts || 0) >= (seen.ts || 0)) byPath.set(k, c);
+    }
+    // Order by recency: pickCapture scans backwards expecting newest last.
+    state.captures = [...byPath.values()].sort((a, b) => (a.ts || 0) - (b.ts || 0)).slice(-10);
   }
 
   // ------------------------------------------------------------ deep JSON keys
@@ -504,22 +552,39 @@
   }
 
   // Replace every standalone occurrence of the id, not just the first.
+  const reEscape = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  function idPattern(id) {
+    return new RegExp(`(?<![0-9])${reEscape(id)}(?![0-9])`, 'g');
+  }
+
   function swapId(bodyStr, fromId, toId) {
-    return String(bodyStr).replace(new RegExp(`(?<![0-9])${fromId}(?![0-9])`, 'g'), toId);
+    // Replacement is a function: a literal string would expand $& and friends.
+    return String(bodyStr).replace(idPattern(fromId), () => String(toId));
+  }
+
+  // Epoch milliseconds are a legitimate shape here; leave other formats alone.
+  function asDate(v) {
+    const s = String(v == null ? '' : v).trim();
+    if (/^\d{13}$/.test(s)) {
+      const d = new Date(Number(s));
+      if (!isNaN(d)) return d.toISOString();
+    }
+    return s;
   }
 
   async function runDetails(delayMs) {
     const byOrder = new Map();
     for (const r of state.rows) if (r.orderId && !byOrder.has(String(r.orderId))) byOrder.set(String(r.orderId), r);
     const ids = [...byOrder.keys()];
-    if (!ids.length) { log('No orders to enrich.'); return; }
+    if (!ids.length) { log('No orders to enrich.'); return 0; }
 
     const cap = pickDetailCapture(new Set(ids));
     if (!cap) {
       log('No order-detail request recorded yet. Open any one order, then click "Fetch purchase dates".');
-      return;
+      return 0;
     }
-    const occurrences = (String(cap.rec.reqBody).match(new RegExp(`(?<![0-9])${cap.sampleId}(?![0-9])`, 'g')) || []).length;
+    const occurrences = (String(cap.rec.reqBody).match(idPattern(cap.sampleId)) || []).length;
     log(`Detail API: ${new URL(cap.rec.url).pathname} — order id in ${occurrences} place(s), dates in ${cap.dateKeys.join(', ')}`);
 
     const headers = { ...(cap.rec.reqHeaders || {}) };
@@ -597,13 +662,7 @@
       if (/voucher|discount|promo|coupon|coins|rebate/.test(l)) return 'discount';
       return 'other';   // product rows and anything unrecognised
     };
-    const amount = (v) => {
-      const str = String(v == null ? '' : v);
-      if (/free/i.test(str)) return 0;
-      const n = parseFloat(str.replace(/[^0-9.]/g, ''));
-      if (!isFinite(n)) return 0;
-      return /-/.test(str) ? -n : n;
-    };
+    const amount = parseMoney;
     const fmt = (n) => (n ? n.toFixed(2) : '');
 
     let filled = 0;
@@ -629,8 +688,8 @@
       r.cashback     = fmt(Math.abs(sums.cashback || 0));
       r.refundAmount = fmt(Math.abs(sums.refund || 0));
       r.charges = Object.entries(lines).map(([k, v]) => `${k}=${v}`).join(' | ');
-      const purchased = pick(h.dates, ['gmtcreate', 'createtime', 'createdat', 'placedat', 'ordertime', 'ordercreatetime'], 'non-payment');
-      const paid = pick(h.dates, ['paytime', 'paidat', 'paymenttime']);  // no fallback: never echo the purchase date
+      const purchased = asDate(pick(h.dates, ['gmtcreate', 'createtime', 'createdat', 'placedat', 'ordertime', 'ordercreatetime'], 'non-payment'));
+      const paid = asDate(pick(h.dates, ['paytime', 'paidat', 'paymenttime']));  // no fallback: never echo the purchase date
       if (purchased) { r.purchasedAt = purchased; filled++; }
       if (paid) r.paidAt = paid;
       // No breakdown fallback here: the breakdown only holds money values, and a
@@ -638,6 +697,7 @@
       if (!r.paymentMethod) r.paymentMethod = pick(h.pay, ['paymentmethod', 'paymentdes', 'paymethod'], 'any');
     }
     log(`Detail pass done — dated ${filled} rows, charged total on ${totalled}, across ${enrich.size} orders.`);
+    return enrich.size;
   }
 
   // --------------------------------------------------------------------- run
@@ -742,7 +802,7 @@
   }
 
   function saveRows() {
-    store.set(RESULT_KEY, { rows: state.rows.slice(0, 20000), at: Date.now(), url: location.pathname });
+    store.set(RESULT_KEY, { rows: state.rows.slice(0, 20000), at: Date.now(), origin: location.origin });
   }
 
   // ------------------------------------------------------------------ output
@@ -762,8 +822,10 @@
     const url = URL.createObjectURL(new Blob([text], { type: `${mime};charset=utf-8` }));
     const a = document.createElement('a');
     a.href = url; a.download = name;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    // Deliberately not appended to the document: a blob URL in the page DOM is
+    // readable by any script on the page, and this blob is the whole export.
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
   }
 
   // A standalone page with the data inlined, so it opens from disk with no
@@ -781,7 +843,8 @@
     const tpl = await fetch(chrome.runtime.getURL('report.html')).then((r) => r.text());
     // A "</script>" inside the data would close the tag early.
     const safe = (v) => JSON.stringify(v).replace(/</g, '\\u003c');
-    const html = tpl.replace('/*__DATA__*/[]', safe(slim)).replace('/*__META__*/{}', safe(meta));
+    const html = tpl.replace('/*__DATA__*/[]', () => safe(slim))
+                    .replace('/*__META__*/{}', () => safe(meta));
     download(`lazada-purchases-${stamp()}.html`, html, 'text/html');
     log(`Saved a browsable page with ${slim.length} items.`);
   }
@@ -825,7 +888,10 @@
         else {
           state.running = true; state.cancel = false; state.done = false;
           runDetails(msg.delayMs || 400)
-            .then(() => { if (state.rows.length) downloadCsv(); finish('Dates added — CSV re-downloaded.'); })
+            .then((n) => {
+              if (n) { downloadCsv(); finish('Dates added — CSV re-downloaded.'); }
+              else finish('No dates were added; the CSV is unchanged.');
+            })
             .catch((e) => finish(`Detail pass failed: ${e.message}`));
           respond({ ok: true });
         }
@@ -847,6 +913,7 @@
         else {
           download('lazada-detail-sample.json', JSON.stringify({
             url: rec.url, method: rec.method,
+            note: 'Request headers omitted: they carry session and CSRF tokens.',
             requestBody: safeParse(rec.reqBody) || rec.reqBody,
             response: safeParse(rec.body) || rec.body,
           }, null, 2), 'application/json');
@@ -868,14 +935,16 @@
   (async () => {
     const saved = await store.get(CAP_KEY);
     if (Array.isArray(saved) && saved.length) {
-      const known = new Set(state.captures.map((c) => `${c.url}|${c.ts}`));
-      for (const c of saved) if (!known.has(`${c.url}|${c.ts}`)) state.captures.push(c);
+      const known = new Set(state.captures.map(capKey));
+      for (const c of saved) if (sameOrigin(c) && !known.has(capKey(c))) state.captures.push(c);
       keepNewestPerPath();
       invalidate();
     }
 
     const prev = await store.get(RESULT_KEY);
-    if (prev && Array.isArray(prev.rows) && prev.rows.length && !state.rows.length && !state.running) {
+    // Only ever restore an export captured on this same Lazada market.
+    if (prev && prev.origin === location.origin
+        && Array.isArray(prev.rows) && prev.rows.length && !state.rows.length && !state.running) {
       state.rows = prev.rows;
       state.raw = [];
       state.done = true;
@@ -891,7 +960,7 @@
       if (!Array.isArray(next)) return;
       const known = new Set(state.captures.map(capKey));
       let added = 0;
-      for (const c of next) if (!known.has(capKey(c))) { state.captures.push(c); added++; }
+      for (const c of next) if (sameOrigin(c) && !known.has(capKey(c))) { state.captures.push(c); added++; }
       if (!added) return;
       keepNewestPerPath();
       invalidate();   // a capture from another tab must re-enable the dates button

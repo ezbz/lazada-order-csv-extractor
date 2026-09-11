@@ -115,15 +115,42 @@
 const DATA = /*__DATA__*/[];
 const META = /*__META__*/{};
 
+// Thailand writes 1,234.50; Indonesia and Vietnam write 1.234.500. A dot is a
+// decimal point only when one or two digits follow it.
 const money = v => {
-  const s = String(v == null ? '' : v);
-  if (/free/i.test(s)) return 0;
-  const neg = /-/.test(s);
-  const n = parseFloat(s.replace(/[^0-9.]/g, ''));
-  return isNaN(n) ? 0 : (neg ? -n : n);
+  const s = String(v == null ? '' : v).trim();
+  if (!s || /free/i.test(s)) return 0;
+  let t = s.replace(/[^0-9.,]/g, '');
+  if (!t) return 0;
+  const dec = t.match(/[.,](\d{1,2})$/);
+  if (dec) {
+    const at = t.length - dec[0].length;
+    t = t.slice(0, at).replace(/[.,]/g, '') + '.' + t.slice(at + 1);
+  } else {
+    t = t.replace(/[.,]/g, '');
+  }
+  const n = parseFloat(t);
+  if (!isFinite(n)) return 0;
+  return s.includes('-') ? -n : n;
 };
-const baht = n => '฿' + Math.round(n).toLocaleString();
+// Six markets, six currencies: take the symbol from the data, never assume THB.
+const SYMBOL = (() => {
+  for (const r of DATA) {
+    const m = String(r.price || r.orderTotal || '').match(/[^\d\s.,-]+/);
+    if (m) return m[0];
+  }
+  return '';
+})();
+const baht = n => SYMBOL + Math.round(n).toLocaleString();
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// Only http(s) may reach an href or src: these URLs come from the API, and a
+// javascript: value would execute when the report is opened from disk.
+const safeUrl = u => {
+  try {
+    const p = new URL(String(u), 'https://x.invalid').protocol;
+    return (p === 'http:' || p === 'https:') ? String(u) : '';
+  } catch (_) { return ''; }
+};
 
 // Normalise once; the table re-sorts and re-filters against these.
 DATA.forEach((r, i) => {
@@ -131,6 +158,10 @@ DATA.forEach((r, i) => {
   r.priceN = money(r.price);
   r.qty = parseInt(r.quantity, 10) || 0;
   r.totalN = money(r.orderTotal);
+  if (/^\d{13}$/.test(String(r.purchasedAt || ''))) {
+    const dt = new Date(Number(r.purchasedAt));
+    if (!isNaN(dt)) r.purchasedAt = dt.toISOString();
+  }
   r.year = (r.purchasedAt || '').slice(0, 4);
   r._hay = [r.title, r.variation, r.shopName, r.orderId, r.status, r.itemStatus].join(' ').toLowerCase();
 });
@@ -187,11 +218,12 @@ function render() {
     const when = r.purchasedAt
       ? `${esc(r.purchasedAt.slice(0, 10))}<small>${esc(r.purchasedAt.slice(11, 16))}</small>`
       : '<span style="color:var(--muted)">—</span>';
-    const img = r.picUrl
-      ? `<img class="thumb" loading="lazy" src="${esc(r.picUrl)}" alt="" onerror="this.style.visibility='hidden'">`
+    const pic = safeUrl(r.picUrl), link = safeUrl(r.itemUrl);
+    const img = pic
+      ? `<img class="thumb" loading="lazy" src="${esc(pic)}" alt="" onerror="this.style.visibility='hidden'">`
       : '<div class="thumb"></div>';
-    const name = r.itemUrl
-      ? `<a href="${esc(r.itemUrl)}" target="_blank" rel="noreferrer">${esc(r.title)}</a>`
+    const name = link
+      ? `<a href="${esc(link)}" target="_blank" rel="noreferrer">${esc(r.title)}</a>`
       : esc(r.title);
     return `<tr>
       <td>${img}</td>
