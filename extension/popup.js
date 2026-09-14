@@ -1,4 +1,14 @@
 const $ = (id) => document.getElementById(id);
+
+// A popup that throws renders as a blank box with no clue why. Surface it.
+function fail(where, err) {
+  const msg = `${where}: ${(err && err.message) || err}`;
+  const box = $('phase') || document.body;
+  if (box) { box.textContent = msg; box.style.color = '#a8342a'; }
+  try { console.error('[order-history-to-csv]', msg, err); } catch (_) {}
+}
+window.addEventListener('error', (e) => fail('Popup error', e.error || e.message));
+window.addEventListener('unhandledrejection', (e) => fail('Popup error', e.reason));
 // Bind defensively: a missing element must not throw at load and take the
 // whole popup down with it.
 const on = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
@@ -103,6 +113,7 @@ on('sample', () => send({ cmd: 'sample' }));
 on('report', () => send({ cmd: 'report' }));
 
 (async () => {
+  try {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || !/lazada\./i.test(tab.url || '')) {
     $('sub').textContent = 'Open Lazada to begin';
@@ -127,4 +138,7 @@ on('report', () => send({ cmd: 'report' }));
   if (!ready) return;
   refresh();
   setInterval(refresh, 700);
+  } catch (e) {
+    fail('Could not start', e);
+  }
 })();
