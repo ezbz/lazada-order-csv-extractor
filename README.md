@@ -30,9 +30,19 @@ Adds `purchasedAt`, plus totals and payment method where the detail response car
 Dates exist only on the order detail page, so this costs **one request per order** — roughly
 10 minutes per 1,000 orders, against ~2 minutes for step 1.
 
-It needs one sample of a detail request to replay, so **open any single order once**; the
-button then enables and shows an estimate for your order count. Measured on a real account:
-**100% of orders dated.**
+It needs one sample of a detail request to replay. If none has been recorded, it loads one of
+your orders in a hidden frame on the list page to record it; if that fails, open any single
+order yourself and click again. Only orders without a date are read, so re-running it is cheap.
+Measured on a real account: **100% of orders dated.**
+
+### Later runs — update
+
+Once an export exists, the main button becomes **Update with new orders**. Pages are newest
+first, so it reads from page 1 and stops at the first page with nothing new, usually in a few
+seconds. New rows go on top, re-read rows get their current status, and every row keeps the
+dates already fetched. If you added dates before, new orders are dated too. If the last export
+stopped part way, the update reads every page once instead, still keeping dates. **Start over**
+(under *Details*) discards the saved export and reads everything fresh.
 
 **Skip step 2 if** you only need what you bought, what it cost, or its current status.
 **Run it if** you need spending over time, or anything ordered chronologically by date.
@@ -102,9 +112,12 @@ responses with no dates rather than grinding through a thousand failing requests
 `purchasedAt`, `paidAt`, and fills `orderTotal` / `paymentMethod` where the detail response has
 them. Your list export is untouched either way.
 
-**Why one manual click:** the recorder only sees requests made in a tab it is attached to. The
-extension could open a detail tab itself, but that needs background tab orchestration that fails
-in more ways than it fixes — one click is the honest trade.
+**No manual click needed:** the recorder only sees requests made in a page it is attached to, so
+when no detail request has been recorded the extension loads one order's detail page in an
+off-screen, same-origin frame on the list page. The interceptor runs in that one frame (it is
+recognised by name; every other embedded frame is ignored) and hands the request over through
+storage, just as a separately opened order tab does. No background tabs are opened. If the frame
+records nothing within 20 seconds, the pass stops and asks you to open an order yourself.
 
 ### Ordering without dates
 

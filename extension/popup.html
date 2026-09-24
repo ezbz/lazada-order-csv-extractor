@@ -56,6 +56,7 @@
     background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
   }
   .primary:hover:not(:disabled) { filter: brightness(1.08); }
+  .primary.halt { background: transparent; color: var(--ink); border-color: var(--ink); }
   .secondary { width: 100%; padding: 9px; font-weight: 550; background: var(--soft); border-color: transparent; }
 
   .note { font-size: 11.5px; line-height: 1.45; color: var(--muted); margin: 7px 2px 0; }
@@ -93,7 +94,7 @@
 <div class="track"><i id="fill"></i></div>
 
 <button id="run" class="primary">Export all orders to CSV</button>
-<p class="note">Everything you have bought: item, variation, quantity, price, status and shop.
+<p class="note" id="runNote">Everything you have bought: item, variation, quantity, price, status and shop.
 Takes about <strong>2 minutes</strong>. Order dates are not included — Lazada's order list simply
 does not return them.</p>
 
@@ -110,7 +111,6 @@ any browser, works offline, nothing to install.</p>
 <div class="row">
   <button id="csv" disabled>Save CSV again</button>
   <button id="json" disabled>Save raw JSON</button>
-  <button id="stop" disabled>Stop</button>
 </div>
 
 <details>
@@ -124,6 +124,7 @@ any browser, works offline, nothing to install.</p>
     <input id="delay" type="number" min="0" step="100" value="600">
   </div>
   <div class="adv" style="margin-top:9px">
+    <button id="full" style="flex:1" disabled title="Discard the saved export and read every page again">Start over</button>
     <button id="sample" style="flex:1" disabled>Save a detail sample</button>
   </div>
   <div id="log"></div>

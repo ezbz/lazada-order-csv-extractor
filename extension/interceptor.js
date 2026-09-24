@@ -2,6 +2,8 @@
 // Records the order-list request so it can be replayed page by page.
 // Everything stays in this tab.
 (() => {
+  // Frames: only the hidden order frame the dates pass loads (see content.js).
+  if (window !== window.top && window.name !== 'lzx-prime') return;
   if (window.__LZX_INTERCEPTOR__) return;
   window.__LZX_INTERCEPTOR__ = true;
 

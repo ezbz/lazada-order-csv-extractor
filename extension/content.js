@@ -1,6 +1,11 @@
 // ISOLATED world. Orchestrates the export.
 // Same-origin fetches from here carry your Lazada session cookies automatically.
 (() => {
+  // Frames run only when the dates pass loads an order in a hidden frame to
+  // record its detail request; any other embedded Lazada frame is left alone.
+  const PRIME_FRAME = 'lzx-prime';
+  const inFrame = window !== window.top;
+  if (inFrame && window.name !== PRIME_FRAME) return;
   if (window.__LZX_CONTENT__) return;
   window.__LZX_CONTENT__ = true;
 
@@ -14,10 +19,13 @@
     running: false,
     cancel: false,
     done: false,
+    complete: false,   // rows cover every page, so an update can stop at the first known page
     phase: null,
     mode: null,
     log: [],
     progress: { done: 0, total: 0, message: 'Ready' },
+    detailError: '',        // why the last dates pass added nothing, shown in the popup
+    failedIds: new Set(),   // orders the dates pass could not date; retried last
   };
 
   const log = (m) => {
@@ -344,7 +352,7 @@
     if (cap) return cap;
     log('Recording one real request from the page…');
     if (!triggerRequest()) { log('No pager found to trigger a request.'); return null; }
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 50 && !state.cancel; i++) {
       await sleep(400);
       cap = pickCapture();
       if (cap) return cap;
@@ -551,6 +559,81 @@
     return ids.size ? pickDetailCapture(ids) : null;
   }
 
+  // Orders the detail pass has not dated yet. An update only adds a handful,
+  // so re-reading every order would waste ten minutes on known answers.
+  function undatedOrders() {
+    const dated = new Set();
+    const all = [];
+    for (const r of state.rows) {
+      const id = String(r.orderId || '');
+      if (!id) continue;
+      if (r.purchasedAt) dated.add(id);
+      if (!all.includes(id)) all.push(id);
+    }
+    return all.filter((id) => !dated.has(id));
+  }
+
+  // Order pages worth loading in the hidden frame, best first. Only this
+  // origin qualifies: the replay runs from here, so a request recorded on
+  // another host would be discarded. That rules out orderDetailUrl as given,
+  // which points at the mobile site (my-m.) while the list is on my.
+  function detailPageCandidates(idSet) {
+    const out = [];
+    const add = (href) => {
+      try {
+        const u = new URL(href, location.href);
+        if (u.origin === location.origin && !out.includes(u.href)) out.push(u.href);
+      } catch (_) {}
+    };
+    // A link on the desktop list itself is the real desktop order page.
+    for (const a of document.querySelectorAll('a[href*="tradeOrderId"]')) {
+      const m = String(a.href).match(/tradeOrderId=(\d+)/);
+      if (m && idSet.has(m[1])) { add(a.href); break; }
+    }
+    const row = state.rows.find((r) => r.orderDetailUrl && idSet.has(String(r.orderId)));
+    if (row) {
+      add(row.orderDetailUrl);
+      // The mobile page's path and query, on this host.
+      try {
+        const u = new URL(row.orderDetailUrl, location.href);
+        add(location.origin + u.pathname + u.search);
+      } catch (_) {}
+    }
+    return out.slice(0, 2);
+  }
+
+  // Without a recorded detail request, load one order in a hidden same-origin
+  // frame. The frame's own interceptor records the request and hands it over
+  // through storage, exactly as a separately opened order tab would.
+  async function ensureDetailCapture(idSet) {
+    let cap = pickDetailCapture(idSet);
+    if (cap) return cap;
+    const urls = detailPageCandidates(idSet);
+    if (urls.length) log('Opening one order out of sight to learn how order details load…');
+    for (const url of urls) {
+      const frame = document.createElement('iframe');
+      frame.name = PRIME_FRAME;
+      frame.src = url;
+      frame.tabIndex = -1;
+      frame.setAttribute('aria-hidden', 'true');
+      // Off-screen but full size: a 1px or hidden frame may never render far
+      // enough to fire the request.
+      frame.style.cssText = 'position:fixed;left:-10000px;top:0;width:1200px;height:900px;border:0;';
+      (document.body || document.documentElement).appendChild(frame);
+      try {
+        for (let i = 0; i < 30 && !state.cancel; i++) {
+          await sleep(500);
+          cap = pickDetailCapture(idSet);
+          if (cap) return cap;
+        }
+      } finally {
+        frame.remove();
+      }
+      if (state.cancel) break;
+    }
+    return null;
+  }
+
   // Replace every standalone occurrence of the id, not just the first.
   const reEscape = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -574,14 +657,23 @@
   }
 
   async function runDetails(delayMs) {
-    const byOrder = new Map();
-    for (const r of state.rows) if (r.orderId && !byOrder.has(String(r.orderId))) byOrder.set(String(r.orderId), r);
-    const ids = [...byOrder.keys()];
-    if (!ids.length) { log('No orders to enrich.'); return 0; }
+    state.detailError = '';
+    // Orders that failed before go last, so they cannot trip the early stop
+    // below ahead of orders that would date fine.
+    const undated = undatedOrders();
+    const ids = [...undated.filter((id) => !state.failedIds.has(id)),
+                 ...undated.filter((id) => state.failedIds.has(id))];
+    if (!ids.length) { log('Every order already has a date.'); return 0; }
 
-    const cap = pickDetailCapture(new Set(ids));
+    state.phase = 'details';
+    state.progress = { done: 0, total: ids.length, message: state.progress.message };
+    const known = new Set(state.rows.map((r) => String(r.orderId)).filter(Boolean));
+    const cap = await ensureDetailCapture(known);
     if (!cap) {
-      log('No order-detail request recorded yet. Open any one order, then click "Fetch purchase dates".');
+      if (!state.cancel) {
+        state.detailError = 'Could not learn how to read order dates here. Click any one of your orders so it opens, let it load, come back to this tab and press "Add purchase dates" again.';
+        log(state.detailError);
+      }
       return 0;
     }
     const occurrences = (String(cap.rec.reqBody).match(idPattern(cap.sampleId)) || []).length;
@@ -593,9 +685,6 @@
     if (!Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')) headers['content-type'] = 'application/json';
 
     const enrich = new Map();
-    state.phase = 'details';
-    state.progress.total = ids.length;
-    state.progress.done = 0;
     let misses = 0;
 
     for (let i = 0; i < ids.length && !state.cancel; i++) {
@@ -612,20 +701,26 @@
           // The response is not about this order — a stale id was left in the
           // request. Dating rows from it would be silently wrong.
           misses++;
+          state.failedIds.add(id);
           if (misses === 1) log(`Response did not match order ${id}; not dating it.`);
         } else {
           const json = safeParse(text);
           const h = json ? harvest(json) : null;
-          if (h && Object.keys(h.dates).length) { enrich.set(id, h); misses = 0; }
-          else misses++;
+          if (h && Object.keys(h.dates).length) { enrich.set(id, h); misses = 0; state.failedIds.delete(id); }
+          else { misses++; state.failedIds.add(id); }
         }
       } catch (e) {
         misses++;
+        state.failedIds.add(id);
         if (i < 3) log(`Detail fetch failed: ${e.message}`);
       }
 
       // Stop early rather than grinding through a thousand failing requests.
-      if (misses >= 8 && enrich.size === 0) { log('Detail replay is not returning matching dates — stopping the pass.'); break; }
+      if (misses >= 8 && enrich.size === 0) {
+        state.detailError = 'Lazada\'s order details are not coming back with dates, so the pass stopped. Open one of your orders in this tab, come back, and try again.';
+        log(state.detailError);
+        break;
+      }
 
       state.progress.done = i + 1;
       if (i % 25 === 0) log(`Details ${i + 1}/${ids.length} — ${enrich.size} dated`);
@@ -701,17 +796,32 @@
   }
 
   // --------------------------------------------------------------------- run
+  // lineId identifies an item line on its own; the title fallback is for DOM
+  // rows, which have none.
+  const rowKey = (r) => (r.lineId ? `${r.orderId}|${r.lineId}` : `${r.orderId}|${r.skuId}|${r.title}`);
+
   function addRows(rows, raw) {
-    const seen = new Set(state.rows.map((r) => `${r.orderId}|${r.lineId}|${r.skuId}|${r.title}`));
+    const seen = new Set(state.rows.map(rowKey));
     let added = 0;
     for (const r of rows) {
-      const k = `${r.orderId}|${r.lineId}|${r.skuId}|${r.title}`;
+      const k = rowKey(r);
       if (seen.has(k)) continue;
       seen.add(k); state.rows.push(r); added++;
     }
     if (raw) state.raw.push(...raw);
     if (added) invalidate();
     return added;
+  }
+
+  // Filled by the detail pass, never by the list. A refreshed row keeps them so
+  // an update does not throw away dates that took minutes to fetch.
+  const DETAIL_FIELDS = ['purchasedAt', 'paidAt', 'shippingFee', 'discount', 'subtotal', 'cashback',
+                         'refundAmount', 'charges', 'orderTotal', 'paymentMethod'];
+
+  function carryDetails(row, prev) {
+    if (!prev) return row;
+    for (const k of DETAIL_FIELDS) if ((row[k] === '' || row[k] == null) && prev[k]) row[k] = prev[k];
+    return row;
   }
 
   async function fetchPage(cap, page) {
@@ -730,27 +840,74 @@
     if (!json) throw new Error(`page ${page}: HTTP ${res.status}, response was not JSON`);
     if (json.success === false) throw new Error(`page ${page}: server said success=false (${json.errorCode || 'no code'})`);
     const parsed = parseUltron(json, page);
-    if (!parsed) throw new Error(`page ${page}: no order items in response`);
-    return parsed;
+    if (parsed) return parsed;
+    // Lazada's page count runs one past the last order (124 pages of orders,
+    // totalPageNum 125). A well-formed page with no items is the end of the
+    // list, not an error; treating it as one left every export "incomplete".
+    const data = json.module && json.module.data;
+    if (isObj(data)) return { rows: [], raw: [], totalPages: 0, empty: true };
+    throw new Error(`page ${page}: no order items in response`);
   }
 
   async function run(opts) {
+    // Pages run newest first. With a complete previous export, reading stops at
+    // the first page holding nothing new; otherwise every page is read again.
+    // Either way, rows from before keep their dates and anything not re-read
+    // is carried over. An explicit page range or "full" starts from nothing.
+    const start = opts.startPage || 1;
+    const merging = !opts.full && start === 1 && !opts.endPage && state.rows.length > 0;
+    const prior = merging ? state.rows : [];
+    const priorByKey = new Map(prior.map((r) => [rowKey(r), r]));
+    const stopEarly = merging && state.complete;
+    const hadDates = prior.some((r) => r.purchasedAt);
+
     state.running = true;
     state.cancel = false;
     state.done = false;
+    state.complete = false;
     state.rows = [];
     state.raw = [];
     state.log = [];
-    state.phase = 'list';
+    state.phase = stopEarly ? 'update' : 'list';
     state.progress = { done: 0, total: 0, message: 'Starting' };
+    invalidate();
+
+    let reachedEnd = false;
+    let fresh = 0;
+    // Folds the previous export back in. Runs on every exit path, so a failed
+    // or stopped update never loses rows the last export had.
+    const mergePrior = () => {
+      if (!merging) return;
+      const seen = new Set(state.rows.map(rowKey));
+      for (const r of prior) if (!seen.has(rowKey(r))) state.rows.push(r);
+      // Raw fields now cover only the re-read pages; the JSON falls back to rows.
+      state.raw = [];
+      invalidate();
+    };
+    const take = (out) => {
+      const rows = out.rows.map((r) => carryDetails(r, priorByKey.get(rowKey(r))));
+      const added = addRows(rows, out.raw);
+      const unseen = rows.filter((r) => !priorByKey.has(rowKey(r))).length;
+      fresh += unseen;
+      return { added, unseen };
+    };
+    if (merging) log(stopEarly
+      ? `Checking for orders newer than your last export (${prior.length} rows).`
+      : 'The last export did not cover every page, so reading them all again (dates are kept).');
 
     try {
       const cap = await ensureCapture();
 
+      if (!cap && state.cancel) {
+        mergePrior();
+        finish('Stopped before anything was read.');
+        return;
+      }
       if (!cap) {
         state.mode = 'live DOM';
         log('No API request could be recorded — reading the visible page instead.');
         addRows(extractLive(1), null);
+        mergePrior();
         finish(`Read ${state.rows.length} rows from the current page only.`);
         return;
       }
@@ -758,38 +915,57 @@
       state.mode = `API (${cap.pager.where})`;
       log(`Using ${new URL(cap.rec.url).pathname} — page field ${cap.pager.where}`);
 
-      const start = opts.startPage || 1;
       const first = await fetchPage(cap, start);
+      if (first.empty) throw new Error(`page ${start}: no order items in response`);
       let total = opts.endPage || first.totalPages || detectTotalPages();
+      // A chosen range, or a page count guessed from the pager, can end early.
+      const trustEnd = !opts.endPage && !!first.totalPages;
       if (total < start) {
         log(`Last page (${total}) is before the first (${start}); exporting page ${start} only.`);
         total = start;
       }
       state.progress.total = total - start + 1;
 
-      addRows(first.rows, first.raw);
+      let caughtUp = false;
+      const firstTake = take(first);
       state.progress.done = 1;
-      log(`Page ${start}/${total} — ${first.rows.length} items`);
+      log(`Page ${start}/${total} — ${first.rows.length} items (${firstTake.unseen} new)`);
+      if (stopEarly && !firstTake.unseen) caughtUp = true;
+      else if (start === total) reachedEnd = true;
 
-      for (let page = start + 1; page <= total && !state.cancel; page++) {
+      for (let page = start + 1; page <= total && !state.cancel && !caughtUp; page++) {
         await sleep(opts.delayMs + Math.random() * 200);
         let out;
         try { out = await fetchPage(cap, page); }
         catch (e) { log(`${e.message} — stopping here.`); break; }
-        const added = addRows(out.rows, out.raw);
+        if (out.empty) { log(`Page ${page} is empty — that is the end of your orders.`); reachedEnd = true; break; }
+        const { added, unseen } = take(out);
         state.progress.done = page - start + 1;
-        log(`Page ${page}/${total} — ${out.rows.length} items (${added} new), ${state.rows.length} rows`);
+        log(`Page ${page}/${total} — ${out.rows.length} items (${added} added, ${unseen} new), ${state.rows.length} rows`);
+        if (stopEarly && !unseen) caughtUp = true;
+        else if (page === total) reachedEnd = true;
       }
 
-      if (opts.fetchDetails && state.rows.length && !state.cancel) {
+      mergePrior();
+      // Complete only if this run read from page 1 to the end, or caught up
+      // with an export that itself was complete.
+      state.complete = !state.cancel && start === 1 && (caughtUp || (reachedEnd && trustEnd));
+      if (!state.complete && !state.cancel && start === 1) log('Not every page was read, so the next update will read them all again.');
+
+      // Someone who added dates before expects new orders dated too.
+      if (merging && hadDates && fresh && !state.cancel && undatedOrders().length) {
         await runDetails(opts.delayMs || 400);
       }
 
       if (state.rows.length) downloadCsv();
+      const orders = new Set(state.rows.map((r) => r.orderId)).size;
       finish(state.cancel
         ? `Stopped. ${state.rows.length} rows kept — CSV downloaded.`
-        : `Done. ${state.rows.length} rows from ${new Set(state.rows.map((r) => r.orderId)).size} orders — CSV downloaded.`);
+        : merging
+          ? `Updated. ${fresh} new ${fresh === 1 ? 'item' : 'items'}; ${state.rows.length} rows from ${orders} orders — CSV downloaded.`
+          : `Done. ${state.rows.length} rows from ${orders} orders — CSV downloaded.`);
     } catch (e) {
+      mergePrior();
       finish(`Failed: ${e.message}`);
     }
   }
@@ -802,7 +978,10 @@
   }
 
   function saveRows() {
-    store.set(RESULT_KEY, { rows: state.rows.slice(0, 20000), at: Date.now(), origin: location.origin });
+    store.set(RESULT_KEY, {
+      rows: state.rows.slice(0, 20000), at: Date.now(), origin: location.origin,
+      complete: state.complete && state.rows.length <= 20000,
+    });
   }
 
   // ------------------------------------------------------------------ output
@@ -854,7 +1033,8 @@
   const downloadJson = () => download(`lazada-orders-${stamp()}.json`, JSON.stringify(state.raw.length ? state.raw : state.rows, null, 2), 'application/json');
 
   // --------------------------------------------------------------- messaging
-  chrome.runtime.onMessage.addListener((msg, _s, respond) => {
+  // The hidden frame only records; the popup talks to the top frame alone.
+  if (!inFrame) chrome.runtime.onMessage.addListener((msg, _s, respond) => {
     try {
       if (msg.cmd === 'ping') {
         drain();
@@ -865,11 +1045,14 @@
         respond({
           ok: true,
           running: state.running,
+          stopping: state.running && state.cancel,
           done: state.done,
           mode: state.mode,
           phase: state.phase,
           rows: state.rows.length,
           orders: new Set(state.rows.map((r) => r.orderId)).size,
+          undated: undatedOrders().length,
+          complete: state.complete,
           progress: state.progress,
           totalPages: dv.totalPages,
           captures: state.captures.length,
@@ -890,7 +1073,8 @@
           runDetails(msg.delayMs || 400)
             .then((n) => {
               if (n) { downloadCsv(); finish('Dates added — CSV re-downloaded.'); }
-              else finish('No dates were added; the CSV is unchanged.');
+              else finish(state.detailError
+                || (undatedOrders().length ? 'No dates were added; the CSV is unchanged.' : 'Every order already has a date.'));
             })
             .catch((e) => finish(`Detail pass failed: ${e.message}`));
           respond({ ok: true });
@@ -941,6 +1125,7 @@
       invalidate();
     }
 
+    if (inFrame) return;
     const prev = await store.get(RESULT_KEY);
     // Only ever restore an export captured on this same Lazada market.
     if (prev && prev.origin === location.origin
@@ -948,6 +1133,10 @@
       state.rows = prev.rows;
       state.raw = [];
       state.done = true;
+      // Exports saved before this flag existed may have been stopped part way;
+      // treating them as incomplete costs one full read, never missing orders.
+      state.complete = prev.complete === true;
+      invalidate();
       log(`Restored ${prev.rows.length} rows from the last export on this page.`);
     }
   })();

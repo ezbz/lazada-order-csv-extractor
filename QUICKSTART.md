@@ -84,13 +84,13 @@ display correctly without any import fiddling.
 
 **The popup is missing.** It is behind the puzzle-piece icon. Pin it — see step 1.
 
-**"Add purchase dates" stays greyed out.** You have not opened an order yet, or the page
-had not finished loading when you went back. Open one order, let it settle, reopen the
-popup. Still stuck? Expand **Details** in the popup — it now names exactly what it saw and
-what was missing.
+**"Add purchase dates" says it could not record an order-detail request.** Loading an order
+out of sight did not work on your account. Open one order in a tab, let it settle, come back
+and click again. Still stuck? Expand **Details** in the popup — it names exactly what it saw
+and what was missing.
 
 **The count stops climbing partway.** Lazada rate-limited you. Open **Details**, raise
-**Pause (ms)** to 1200, and run it again — it starts over cleanly.
+**Pause (ms)** to 1200, and run it again — it re-reads every page and keeps what you have.
 
 **Nothing happens at all.** You are probably not on the order list page, or not signed in.
 The popup says which.
