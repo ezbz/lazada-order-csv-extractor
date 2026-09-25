@@ -7,17 +7,8 @@ minutes, most of which is waiting.
 
 ## 1. Install
 
-The extension is not on the Chrome Web Store yet, so it installs from source. This is
-normal and takes a minute.
-
-1. Download this repository — **Code → Download ZIP** on GitHub — and unzip it somewhere
-   you will not delete by accident. `~/Documents` is fine; your Downloads folder is not,
-   because Chrome loads the extension from this folder every time it starts.
-2. Open a new tab and go to `chrome://extensions`.
-3. Turn on **Developer mode** — the toggle is in the top-right corner.
-4. Click **Load unpacked** (top-left) and select the **`extension`** folder inside the
-   unzipped folder. Not the outer folder — the one containing `manifest.json`.
-5. You should now see *Order History to CSV* in the list, with a teal download icon.
+1. Open **[Order History to CSV on the Chrome Web Store](https://chromewebstore.google.com/detail/order-history-to-csv/pkdjoffoinojcgeggfnodgilakeclecg)**.
+2. Click **Add to Chrome**, then **Add extension**.
 
 **Pin it, or you will not find it again.** Click the puzzle-piece icon to the right of
 Chrome's address bar, find *Order History to CSV*, and click the pin next to it.
@@ -49,12 +40,13 @@ detail page.
 
 So if you need dates:
 
-1. **Click into any one of your orders.** Any order, once. This lets the extension see
-   what an order-detail request looks like so it can repeat it.
-2. Go back to your order list and open the popup. **Add purchase dates** is now enabled
-   and shows an estimate for your order count.
-3. Click it. This reads one order at a time — budget roughly ten minutes per thousand
+1. After the export, open the popup again. **Add purchase dates** shows how many orders
+   need a date and how long that will take.
+2. Click it. This reads one order at a time — budget roughly ten minutes per thousand
    orders. A fresh CSV downloads when it finishes, with `purchasedAt` filled in.
+
+Next time, **Update with new orders** adds only what you bought since, in a few seconds,
+and dates the new orders too if you added dates before.
 
 **Skip this** if you only need what you bought, what it cost, and its status.
 **Run it** if you need spending over time, or anything ordered by date.

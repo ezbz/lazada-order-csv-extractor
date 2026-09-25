@@ -12,9 +12,11 @@ Not affiliated with, endorsed by, or connected to Lazada.
 
 ## Use the extension
 
-1. `chrome://extensions` → **Developer mode** → **Load unpacked** → pick `extension/`.
+1. Install **[Order History to CSV from the Chrome Web Store](https://chromewebstore.google.com/detail/order-history-to-csv/pkdjoffoinojcgeggfnodgilakeclecg)**.
 2. Pin it: puzzle-piece icon in the toolbar → pin **Order History to CSV**.
 3. Open Lazada → **My Orders** → click the icon.
+
+Working on the code? See [Development](#development).
 
 ### Step 1 — Export all orders to CSV
 
@@ -48,6 +50,17 @@ stopped part way, the update reads every page once instead, still keeping dates.
 **Run it if** you need spending over time, or anything ordered chronologically by date.
 Without it, sort by `orderId` ascending — it is a near-perfect chronological proxy
 (see *Ordering without dates*).
+
+## Development
+
+To run your working copy instead of the store build:
+
+1. `chrome://extensions` → **Developer mode** → **Load unpacked** → pick `extension/`.
+2. After editing, click the reload arrow on the extension's card, then reload the Lazada tab.
+3. Before a release, run `tools/check.sh`: syntax, popup ids against the HTML, manifest files.
+
+An unpacked copy gets its own extension id, so it does not see exports saved by the store
+build. Disable one of the two while testing, or both will attach to the same page.
 
 ## Console alternative
 
