@@ -4,7 +4,7 @@ Lazada has no export. This gets your entire purchase history into a CSV — ever
 price, status and shop — instead of clicking through a hundred-plus pages by hand.
 
 Runs entirely in your own signed-in browser session. No server, no account, no analytics;
-nothing leaves the tab. [Privacy policy](PRIVACY.md) · [MIT licensed](LICENSE)
+nothing leaves the tab. [Privacy policy](PRIVACY.md) · [Changelog](CHANGELOG.md) · [MIT licensed](LICENSE)
 
 **→ [Quick start guide](QUICKSTART.md)** — install and first export, about five minutes.
 
