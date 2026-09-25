@@ -72,7 +72,7 @@ almost perfectly, because Lazada issues order ids in time order.
 | `itemStatus` | Line-level state such as *Refund issued* — often more interesting than `status` |
 | `shopName`, `shopId`, `sellerId` | Who you bought from |
 | `orderDetailUrl`, `itemUrl`, `picUrl` | Links back to Lazada |
-| `purchasedAt` | Only after step 3 |
+| `purchasedAt`, `paidAt` | Only after step 3, as `2026-05-31 17:34:48` |
 | `raw.*`, `shop.*` | Every other field Lazada returned, untouched |
 
 Open it in Excel, Numbers, or Google Sheets. It is UTF-8 with a BOM, so Thai text and ฿

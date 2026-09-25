@@ -142,7 +142,7 @@ One row per order **item**. An order with three products is three rows sharing a
 | Column | |
 |---|---|
 | `orderId`, `lineId` | Order, and the specific line within it |
-| `purchasedAt`, `paidAt` | Detail pass only. Run `tools/fix-dates.py` to get sortable ISO timestamps |
+| `purchasedAt`, `paidAt` | Detail pass only. `YYYY-MM-DD HH:MM:SS` in Lazada's local time, so they sort. `tools/fix-dates.py` still converts exports made before 2.4.1 |
 | `title`, `variation`, `quantity`, `price` | The item, and its **list price** |
 | `status` | Delivered, Cancelled, Paid, Closed, … |
 | `itemStatus`, `refunded` | Line-level state (*Refund issued*, *Refund completed*) and a yes/blank flag |

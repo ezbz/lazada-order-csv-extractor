@@ -462,7 +462,8 @@
   }
 
   function harvest(root) {
-    const out = { dates: {}, pay: {}, total: {}, lines: {} };
+    // stamps keeps every date value in order; dates only the first per key.
+    const out = { dates: {}, stamps: [], pay: {}, total: {}, lines: {} };
     const seen = new Set();
     (function walk(n, depth) {
       if (!n || typeof n !== 'object' || depth > 8 || seen.has(n)) return;
@@ -473,8 +474,10 @@
       for (const [k, v] of Object.entries(n)) {
         if (isScalar(v) && v !== null && String(v).trim()) {
           const sv = String(v).trim();
-          if (DATE_KEY.test(k) && DATEISH.test(sv) && !out.dates[k]) out.dates[k] = sv;
-          else if (PAY_KEY.test(k) && sv.length < 60 && !out.pay[k]) out.pay[k] = sv;
+          if (DATE_KEY.test(k) && DATEISH.test(sv)) {
+            if (!out.dates[k]) out.dates[k] = sv;
+            out.stamps.push([k, sv]);
+          } else if (PAY_KEY.test(k) && sv.length < 60 && !out.pay[k]) out.pay[k] = sv;
           else if (TOTAL_KEY.test(k) && sv.length < 30 && !out.total[k]) out.total[k] = sv;
         } else walk(v, depth + 1);
       }
@@ -646,14 +649,40 @@
     return String(bodyStr).replace(idPattern(fromId), () => String(toId));
   }
 
-  // Epoch milliseconds are a legitimate shape here; leave other formats alone.
-  function asDate(v) {
+  // Lazada sends display text ("Placed on 31 May 2026  17:34:48"), sometimes
+  // epoch milliseconds. Both become "2026-05-31 17:34:48" so the column sorts;
+  // label is the word before "on" (placed, paid), which says what the time is.
+  // A delivery estimate ("Get by 25 Sep") has no year and yields no time.
+  const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+  const pad = (n) => String(n).padStart(2, '0');
+  function readDate(v) {
     const s = String(v == null ? '' : v).trim();
+    const label = ((s.match(/^([a-z ]+?)\s+on\s/i) || [])[1] || '').toLowerCase();
     if (/^\d{13}$/.test(s)) {
       const d = new Date(Number(s));
-      if (!isNaN(d)) return d.toISOString();
+      if (isNaN(d)) return { at: '', label };
+      return { at: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} `
+        + `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`, label };
     }
-    return s;
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return { at: s.replace('T', ' ').slice(0, 19), label };
+    const m = s.match(/(\d{1,2})\s+([A-Za-z]{3})[A-Za-z]*\.?,?\s+(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+    const mon = m ? MONTHS.indexOf(m[2].toLowerCase()) : -1;
+    if (mon < 0) return { at: '', label };
+    return { at: `${m[3]}-${pad(mon + 1)}-${pad(m[1])} ${pad(m[4] || 0)}:${m[5] || '00'}:${m[6] || '00'}`, label };
+  }
+
+  // Restored rows from 2.4.0 hold the raw text, and a delivery estimate may sit
+  // in purchasedAt. Normalise; a blanked date makes the order undated again.
+  function normaliseDates(r) {
+    if (r.purchasedAt) {
+      const d = readDate(r.purchasedAt);
+      r.purchasedAt = d.label === 'paid' ? '' : d.at;
+    }
+    if (r.paidAt) {
+      const d = readDate(r.paidAt);
+      r.paidAt = d.label === 'placed' ? '' : d.at;
+    }
+    return r;
   }
 
   async function runDetails(delayMs) {
@@ -728,6 +757,14 @@
     }
 
     const PAYISH = /(pay|paid)/i;
+    // What the text says beats what the key is called; then known keys whose
+    // text does not contradict them; then anything that passes ok.
+    const stampOf = (stamps, labels, keys, ok) => {
+      const hit = stamps.find((s) => labels.includes(s.label))
+        || stamps.find((s) => keys.includes(s.k) && (!s.label || labels.includes(s.label)))
+        || stamps.find(ok);
+      return hit ? hit.at : '';
+    };
     const pick = (obj, prefer, fallback) => {
       for (const k of prefer) for (const [key, v] of Object.entries(obj)) if (key.toLowerCase() === k) return v;
       if (fallback === 'non-payment') {
@@ -783,8 +820,13 @@
       r.cashback     = fmt(Math.abs(sums.cashback || 0));
       r.refundAmount = fmt(Math.abs(sums.refund || 0));
       r.charges = Object.entries(lines).map(([k, v]) => `${k}=${v}`).join(' | ');
-      const purchased = asDate(pick(h.dates, ['gmtcreate', 'createtime', 'createdat', 'placedat', 'ordertime', 'ordercreatetime'], 'non-payment'));
-      const paid = asDate(pick(h.dates, ['paytime', 'paidat', 'paymenttime']));  // no fallback: never echo the purchase date
+      const stamps = (h.stamps || []).map(([k, v]) => ({ k: k.toLowerCase(), ...readDate(v) })).filter((s) => s.at);
+      const purchased = stampOf(stamps, ['placed', 'ordered', 'created'],
+        ['gmtcreate', 'createtime', 'createdat', 'placedat', 'ordertime', 'ordercreatetime'],
+        (s) => s.label !== 'paid' && !PAYISH.test(s.k));
+      // No fallback beyond payment keys: never echo the purchase date.
+      const paid = stampOf(stamps, ['paid'], ['paytime', 'paidat', 'paymenttime'],
+        (s) => s.label === 'paid');
       if (purchased) { r.purchasedAt = purchased; filled++; }
       if (paid) r.paidAt = paid;
       // No breakdown fallback here: the breakdown only holds money values, and a
@@ -1130,7 +1172,7 @@
     // Only ever restore an export captured on this same Lazada market.
     if (prev && prev.origin === location.origin
         && Array.isArray(prev.rows) && prev.rows.length && !state.rows.length && !state.running) {
-      state.rows = prev.rows;
+      state.rows = prev.rows.map(normaliseDates);
       state.raw = [];
       state.done = true;
       // Exports saved before this flag existed may have been stopped part way;

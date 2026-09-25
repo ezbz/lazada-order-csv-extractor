@@ -162,7 +162,9 @@ DATA.forEach((r, i) => {
     const dt = new Date(Number(r.purchasedAt));
     if (!isNaN(dt)) r.purchasedAt = dt.toISOString();
   }
-  r.year = (r.purchasedAt || '').slice(0, 4);
+  // Exports before 2.4.1 could hold "Placed on …" text; only a real date has a year.
+  if (!/^\d{4}-\d{2}-\d{2}/.test(String(r.purchasedAt || ''))) r.purchasedAt = '';
+  r.year = r.purchasedAt.slice(0, 4);
   r._hay = [r.title, r.variation, r.shopName, r.orderId, r.status, r.itemStatus].join(' ').toLowerCase();
 });
 
